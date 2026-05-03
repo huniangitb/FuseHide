@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.github.xiaotong6666.fusehide;
 
 import android.app.AndroidAppHelper;
@@ -255,6 +254,26 @@ public class Entry implements IXposedHookLoadPackage {
             } else {
                 ContextCompat.registerReceiver(
                         application, queryReceiver, queryFilter, ContextCompat.RECEIVER_EXPORTED);
+            }
+
+            BroadcastReceiver monitorReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    String[] events = HideConfigNativeBridge.fetchMonitorEvents();
+                    if (events != null && events.length > 0) {
+                        Intent reply = new Intent("io.github.xiaotong6666.fusehide.REPORT_EVENTS")
+                                .setPackage(APP_PACKAGE)
+                                .putExtra("events", events);
+                        application.sendBroadcast(reply);
+                    }
+                }
+            };
+            IntentFilter monitorFilter = new IntentFilter("io.github.xiaotong6666.fusehide.FETCH_EVENTS");
+            if (Build.VERSION.SDK_INT >= 33) {
+                application.registerReceiver(monitorReceiver, monitorFilter, Context.RECEIVER_EXPORTED);
+            } else {
+                ContextCompat.registerReceiver(
+                        application, monitorReceiver, monitorFilter, ContextCompat.RECEIVER_EXPORTED);
             }
 
             BroadcastReceiver systemStateReceiver = new BroadcastReceiver() {

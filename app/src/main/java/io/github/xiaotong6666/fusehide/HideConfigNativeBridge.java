@@ -49,4 +49,6 @@ public final class HideConfigNativeBridge {
             String[] hiddenRootEntryNames,
             String[] hiddenRelativePaths,
             String[] hiddenPackages);
+
+    public static native String[] fetchMonitorEvents();
 }

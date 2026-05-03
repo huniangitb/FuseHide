@@ -13,13 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+ 
 package io.github.xiaotong6666.fusehide
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Binder
@@ -45,7 +46,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -54,10 +57,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -71,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.github.xiaotong6666.fusehide.ui.theme.fuseHideTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -94,11 +100,74 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
+data class MonitorEventItem(
+    val time: String,
+    val type: String,
+    val uid: Int,
+    val path: String
+)
+
+object MonitorLogger {
+    private const val MAX_FILE_SIZE = 1 * 1024 * 1024L // 1MB
+    private lateinit var logFile: File
+
+    fun init(context: Context) {
+        if (!::logFile.isInitialized) {
+            logFile = File(context.cacheDir, "monitor_events.log")
+        }
+    }
+
+    fun appendEvents(events: List<String>) {
+        if (!::logFile.isInitialized) return
+        try {
+            val text = events.joinToString("\n") + "\n"
+            logFile.appendText(text)
+            if (logFile.length() > MAX_FILE_SIZE) {
+                val lines = logFile.readLines()
+                val keepLines = lines.takeLast(lines.size / 2)
+                logFile.writeText(keepLines.joinToString("\n") + "\n")
+            }
+        } catch (e: Exception) {
+            Log.e("FuseHide", "MonitorLogger append error", e)
+        }
+    }
+
+    fun loadEvents(): List<MonitorEventItem> {
+        if (!::logFile.isInitialized || !logFile.exists()) return emptyList()
+        return try {
+            logFile.readLines().mapNotNull { parseMonitorEvent(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun clear() {
+        if (::logFile.isInitialized && logFile.exists()) {
+            logFile.writeText("")
+        }
+    }
+}
+
+fun parseMonitorEvent(line: String): MonitorEventItem? {
+    val bracketIndex = line.indexOf("] ")
+    if (bracketIndex == -1 || bracketIndex < 1) return null
+    val timeStr = line.substring(1, bracketIndex)
+    
+    val rest = line.substring(bracketIndex + 2)
+    val parts = rest.split("|", limit = 3)
+    if (parts.size < 3) return null
+    return MonitorEventItem(
+        time = timeStr,
+        type = parts[0],
+        uid = parts[1].toIntOrNull() ?: 0,
+        path = parts[2]
+    )
+}
+
 private data class HideConfigDiff(
     val hasDifferences: Boolean,
     val summary: String,
     val details: String,
-
 )
 
 private data class GridActionItem(
@@ -106,6 +175,7 @@ private data class GridActionItem(
     val action: () -> Unit,
     val isError: Boolean = false,
 )
+
 class MainActivity : ComponentActivity() {
     companion object {
         private const val APP_PACKAGE = "io.github.xiaotong6666.fusehide"
@@ -165,6 +235,10 @@ class MainActivity : ComponentActivity() {
     private var pathText2 by mutableStateOf("")
     private var outputText by mutableStateOf("")
 
+    private var isMonitoring by mutableStateOf(false)
+    private val monitorEvents = mutableStateListOf<MonitorEventItem>()
+    private val appNameCache = mutableMapOf<Int, String>()
+
     private var hookedPackage: String? = null
     private var hookedPid: Int = -1
     private var statusBinderReference: WeakReference<Binder>? = null
@@ -174,8 +248,24 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusReceiver: StatusBroadcastReceiver
     private lateinit var configStatusReceiver: BroadcastReceiver
     private lateinit var appliedConfigReceiver: BroadcastReceiver
+    private lateinit var monitorReceiver: BroadcastReceiver
     private var pendingReloadToken: String? = null
     private var pendingQueryToken: String? = null
+
+    private fun getAppName(uid: Int): String {
+        if (uid == 0) return "Root"
+        return appNameCache.getOrPut(uid) {
+            try {
+                val pm = packageManager
+                val packages = pm.getPackagesForUid(uid)
+                if (!packages.isNullOrEmpty()) {
+                    val appInfo = pm.getApplicationInfo(packages[0], 0)
+                    return@getOrPut pm.getApplicationLabel(appInfo).toString()
+                }
+            } catch (e: Exception) {}
+            "UID:$uid"
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -184,6 +274,10 @@ class MainActivity : ComponentActivity() {
         applyConfigToEditor(HideConfigStore.load(this))
         configStatusText = getString(R.string.config_loaded_saved) + "\n"
         appliedConfigSnapshotText = getString(R.string.config_snapshot_missing) + "\n"
+
+        MonitorLogger.init(this)
+        val initialEvents = MonitorLogger.loadEvents()
+        monitorEvents.addAll(initialEvents)
 
         statusReceiver = StatusBroadcastReceiver(this, 1)
         val filter = IntentFilter(ACTION_SET_STATUS)
@@ -253,6 +347,29 @@ class MainActivity : ComponentActivity() {
             registerReceiver(appliedConfigReceiver, appliedConfigFilter)
         }
 
+        monitorReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val newEvents = intent?.getStringArrayExtra("events")
+                if (newEvents != null) {
+                    val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+                    val formatted = newEvents.map { "[$time] $it" }
+                    MonitorLogger.appendEvents(formatted)
+                    val parsedEvents = formatted.mapNotNull { parseMonitorEvent(it) }
+                    
+                    if (monitorEvents.size > 2000) {
+                        monitorEvents.removeRange(0, monitorEvents.size - 1000)
+                    }
+                    monitorEvents.addAll(parsedEvents)
+                }
+            }
+        }
+        val monitorFilter = IntentFilter("io.github.xiaotong6666.fusehide.REPORT_EVENTS")
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(monitorReceiver, monitorFilter, RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(monitorReceiver, monitorFilter)
+        }
+
         setContent {
             fuseHideTheme {
                 fuseHideHomeScreen(
@@ -279,6 +396,14 @@ class MainActivity : ComponentActivity() {
                     pathText = pathText,
                     pathText2 = pathText2,
                     outputText = outputText,
+                    isMonitoring = isMonitoring,
+                    monitorEvents = monitorEvents,
+                    getAppName = ::getAppName,
+                    onMonitoringToggle = { isMonitoring = it },
+                    onMonitorClear = { 
+                        monitorEvents.clear()
+                        MonitorLogger.clear()
+                    },
                     onStatusClick = ::startStatusCheck,
                     onEnableHideAllRootEntriesChanged = { enableHideAllRootEntries = it },
                     onHideAllRootEntriesExemptionsChanged = { hideAllRootEntriesExemptionsText = it },
@@ -515,7 +640,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Use Utils for native rmdir/unlink
+                
                 9 -> {
                     val res = Utils.unlink(rawPath)
                     if (res == 0) {
@@ -553,7 +678,7 @@ class MainActivity : ComponentActivity() {
                                 existCount++
                                 existPkgs.append(pkg.packageName).append("\n")
                             } catch (e: ErrnoException) {
-                                // ignore
+                                
                             }
                         }
                         sb.append("Detected $existCount/${pkgs.size} packages\n")
@@ -751,6 +876,7 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(statusReceiver)
         unregisterReceiver(configStatusReceiver)
         unregisterReceiver(appliedConfigReceiver)
+        unregisterReceiver(monitorReceiver)
         statusCheckThread?.interrupt()
     }
 }
@@ -780,6 +906,11 @@ private fun fuseHideHomeScreen(
     pathText: String,
     pathText2: String,
     outputText: String,
+    isMonitoring: Boolean,
+    monitorEvents: List<MonitorEventItem>,
+    getAppName: (Int) -> String,
+    onMonitoringToggle: (Boolean) -> Unit,
+    onMonitorClear: () -> Unit,
     onStatusClick: () -> Unit,
     onEnableHideAllRootEntriesChanged: (Boolean) -> Unit,
     onHideAllRootEntriesExemptionsChanged: (String) -> Unit,
@@ -809,19 +940,28 @@ private fun fuseHideHomeScreen(
     onSelfDataClick: () -> Unit,
 ) {
     val view = LocalView.current
-    val pagerState = rememberPagerState(initialPage = selectedTab, pageCount = { 2 })
+    val pagerState = rememberPagerState(initialPage = selectedTab, pageCount = { 3 })
     val coroutineScope = rememberCoroutineScope()
     val scrollBehavior = MiuixScrollBehavior()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
-    LaunchedEffect(selectedTab) {
-        if (pagerState.currentPage != selectedTab) {
-            pagerState.animateScrollToPage(selectedTab)
+    LaunchedEffect(isMonitoring) {
+        while (isMonitoring) {
+            val fetchIntent = Intent("io.github.xiaotong6666.fusehide.FETCH_EVENTS")
+            listOf(
+                "com.google.android.providers.media.module",
+                "com.android.providers.media.module",
+            ).forEach { pkg ->
+                fetchIntent.setPackage(pkg)
+                context.sendBroadcast(fetchIntent)
+            }
+            delay(1000)
         }
     }
 
-    LaunchedEffect(pagerState.currentPage) {
-        if (pagerState.currentPage != selectedTab) {
-            onTabSelected(pagerState.currentPage)
+    LaunchedEffect(pagerState.settledPage) {
+        if (pagerState.settledPage != selectedTab) {
+            onTabSelected(pagerState.settledPage)
         }
     }
 
@@ -833,10 +973,10 @@ private fun fuseHideHomeScreen(
                 color = MiuixTheme.colorScheme.surface,
                 titleColor = MiuixTheme.colorScheme.onSurface,
                 scrollBehavior = scrollBehavior,
-                subtitle = if (selectedTab == 0) {
-                    stringResource(R.string.home_subtitle_policy)
-                } else {
-                    stringResource(R.string.home_subtitle_probe)
+                subtitle = when (selectedTab) {
+                    0 -> stringResource(R.string.home_subtitle_policy)
+                    1 -> stringResource(R.string.home_subtitle_probe)
+                    else -> stringResource(R.string.home_subtitle_monitor)
                 },
                 subtitleColor = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 bottomContent = {
@@ -844,6 +984,7 @@ private fun fuseHideHomeScreen(
                         tabs = listOf(
                             stringResource(R.string.tab_policy),
                             stringResource(R.string.tab_probe),
+                            stringResource(R.string.tab_monitor)
                         ),
                         selectedTabIndex = selectedTab,
                         onTabSelected = {
@@ -893,7 +1034,7 @@ private fun fuseHideHomeScreen(
                     contentPadding = paddingValues,
                 )
 
-                else -> debugScreen(
+                1 -> debugScreen(
                     infoText = infoText,
                     statusText = statusText,
                     isHooked = isHooked,
@@ -924,6 +1065,109 @@ private fun fuseHideHomeScreen(
                     onSelfDataClick = onSelfDataClick,
                     contentPadding = paddingValues,
                 )
+
+                2 -> monitorScreen(
+                    isMonitoring = isMonitoring,
+                    events = monitorEvents,
+                    getAppName = getAppName,
+                    onToggleMonitoring = onMonitoringToggle,
+                    onClear = onMonitorClear,
+                    contentPadding = paddingValues,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun monitorScreen(
+    isMonitoring: Boolean,
+    events: List<MonitorEventItem>,
+    getAppName: (Int) -> String,
+    onToggleMonitoring: (Boolean) -> Unit,
+    onClear: () -> Unit,
+    contentPadding: PaddingValues,
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    
+    val filteredEvents = remember(events, searchQuery) {
+        if (searchQuery.isEmpty()) events
+        else events.filter { 
+            val appName = getAppName(it.uid)
+            appName.contains(searchQuery, ignoreCase = true) || 
+            it.path.contains(searchQuery, ignoreCase = true) || 
+            it.type.contains(searchQuery, ignoreCase = true)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(contentPadding)
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        dualActionRow(
+            primaryLabel = if (isMonitoring) stringResource(R.string.monitor_stop) else stringResource(R.string.monitor_start),
+            onPrimaryClick = { onToggleMonitoring(!isMonitoring) },
+            secondaryLabel = stringResource(R.string.monitor_clear),
+            onSecondaryClick = onClear,
+        )
+
+        TextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.monitor_search),
+            backgroundColor = MiuixTheme.colorScheme.surfaceContainerHighest,
+            labelColor = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            borderColor = MiuixTheme.colorScheme.primary,
+            textStyle = MiuixTheme.textStyles.main.copy(color = MiuixTheme.colorScheme.onSurfaceSecondary),
+            singleLine = true,
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            colors = CardDefaults.defaultColors(
+                color = MiuixTheme.colorScheme.surfaceContainerHigh.copy(0.45f),
+                contentColor = MiuixTheme.colorScheme.onSurfaceContainerHigh,
+            ),
+            insideMargin = PaddingValues(0.dp),
+        ) {
+            if (filteredEvents.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.monitor_empty),
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                )
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    items(filteredEvents.size) { index ->
+                        val event = filteredEvents[filteredEvents.size - 1 - index]
+                        val appName = getAppName(event.uid)
+                        val color = when (event.type) {
+                            "OPEN" -> Color(0xFF2196F3)
+                            "CREATE" -> Color(0xFF4CAF50)
+                            "DELETE" -> Color(0xFFF44336)
+                            else -> MiuixTheme.colorScheme.onSurface
+                        }
+                        
+                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(event.time, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = FontFamily.Monospace, style = MiuixTheme.textStyles.footnote1)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(appName, color = MiuixTheme.colorScheme.onSurface, style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(event.path, color = MiuixTheme.colorScheme.onSurfaceSecondary, fontFamily = FontFamily.Monospace, style = MiuixTheme.textStyles.footnote1)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(event.type, color = color, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, style = MiuixTheme.textStyles.footnote1, textAlign = TextAlign.End)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1733,13 +1977,12 @@ private fun monospaceBlock(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-// For Android Studio preview compose interface.
 @Preview(showBackground = true, device = "id:pixel_9_pro")
 @Composable
 private fun previewFuseHideHomeScreen() {
     io.github.xiaotong6666.fusehide.ui.theme.fuseHideTheme {
         fuseHideHomeScreen(
-            selectedTab = 0, // 0 预览配置页，改成 1 预览测试页
+            selectedTab = 0, 
             onTabSelected = {},
             infoText = "Kernel: 6.1.118\nDevice: Fuxi\nSDK: 3600000",
             statusText = "Hooked: com.example.app (1234)",
@@ -1766,7 +2009,11 @@ private fun previewFuseHideHomeScreen() {
             pathText = "/storage/emulated/0/Android",
             pathText2 = "",
             outputText = "Stat /storage/emulated/0/Android -> OK",
-
+            isMonitoring = false,
+            monitorEvents = emptyList(),
+            getAppName = { "Root" },
+            onMonitoringToggle = {},
+            onMonitorClear = {},
             onStatusClick = {},
             onEnableHideAllRootEntriesChanged = {},
             onHideAllRootEntriesExemptionsChanged = {},
