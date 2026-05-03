@@ -2,8 +2,16 @@
     <string name="app_name">FuseHide</string>
     <string name="home_subtitle_policy">调整运行时隐藏配置，并验证 MediaProvider 的实际使用情况。</string>
     <string name="home_subtitle_probe">针对被 Hook 的 MediaProvider 进程运行直接路径检测。</string>
+    <string name="home_subtitle_monitor">FUSE 动作实时监控 (Open/Create/Delete)。</string>
     <string name="tab_policy">配置</string>
     <string name="tab_probe">检测</string>
+    <string name="tab_monitor">监控</string>
+    <string name="monitor_start">开始监控</string>
+    <string name="monitor_stop">停止监控</string>
+    <string name="monitor_clear">清空监控</string>
+    <string name="monitor_empty">暂无监控事件...</string>
+    <string name="monitor_search">搜索日志 (应用名, 路径, 操作)...</string>
+
     <string name="section_runtime_policy">运行时配置</string>
     <string name="section_runtime_policy_desc">编辑应用保存的隐藏配置，并将其推送到被 Hook 的 MediaProvider 进程中。</string>
     <string name="section_editable_draft">编辑配置</string>

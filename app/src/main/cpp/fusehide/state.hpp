@@ -43,7 +43,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
+extern std::atomic<bool> gMonitorEnabled;
 struct fuse_session {};
 struct fuse_req {
     struct fuse_session* se;
@@ -92,6 +92,12 @@ struct DirectoryEntry {
 }  // namespace mediaprovider
 
 namespace fusehide {
+extern std::mutex gMonitorMutex;
+extern std::vector<std::string> gMonitorQueue;
+
+extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name);
+extern "C" void RecordMonitorEventIno(fuse_req_t req, const char* type, uint64_t ino);
+extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const char* path);
 
 inline constexpr const char* kLogTag = "FuseHide";
 inline constexpr const char* kTargetLibrary = "libfuse_jni.so";
@@ -461,7 +467,6 @@ extern std::unordered_map<uint32_t, std::string> gRecentHiddenParentPaths;
 extern std::unordered_map<uint32_t, uint32_t> gRecentHiddenParentPathUids;
 extern std::string gRecentHiddenParentPathAnyUid;
 extern uint32_t gRecentHiddenParentPathAnyUidOwner;
-
 namespace ReplyErrorBridge {
 // Use Original() only when preserving strict "hook backup only" semantics for a wrapper that
 // directly proxies fuse_reply_err itself.

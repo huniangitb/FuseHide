@@ -16,6 +16,10 @@
 
 namespace fusehide {
 
+extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name);
+extern "C" void RecordMonitorEventIno(fuse_req_t req, const char* type, uint64_t ino);
+extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const char* path);
+
 namespace {
 
 thread_local uint32_t gActiveCreateUid = 0;
@@ -312,6 +316,7 @@ extern "C" void WrappedPfAccess(fuse_req_t req, uint64_t ino, int mask) {
 }
 
 extern "C" void WrappedPfOpen(fuse_req_t req, uint64_t ino, void* fi) {
+    RecordMonitorEventIno(req, "OPEN", ino);
     RuntimeState::RememberFuseSession(req);
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, void*)>(gOriginalPfOpen);
     if (fn) {
@@ -331,6 +336,7 @@ extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, void* fi) {
 // hidden leaf name would still leak existence semantics unless we stop it here.
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1184
 extern "C" void WrappedPfMkdir(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode) {
+    RecordMonitorEvent(req, "CREATE", parent, name);
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     const HiddenNamedTargetKind kind = ClassifyHiddenNamedTarget(uid, parent, name);
@@ -357,6 +363,7 @@ extern "C" void WrappedPfMkdir(fuse_req_t req, uint64_t parent, const char* name
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1134
 extern "C" void WrappedPfMknod(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode,
                                uint64_t rdev) {
+    RecordMonitorEvent(req, "CREATE", parent, name);
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     const HiddenNamedTargetKind kind = ClassifyHiddenNamedTarget(uid, parent, name);
@@ -383,6 +390,7 @@ extern "C" void WrappedPfMknod(fuse_req_t req, uint64_t parent, const char* name
 // names must return ENOENT here instead of reaching the lower filesystem.
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1218
 extern "C" void WrappedPfUnlink(fuse_req_t req, uint64_t parent, const char* name) {
+    RecordMonitorEvent(req, "DELETE", parent, name);
     RuntimeState::RememberFuseSession(req);
     const HiddenNamedTargetKind kind =
         ClassifyHiddenNamedTarget(RuntimeState::ReqUid(req), parent, name);
@@ -399,6 +407,7 @@ extern "C" void WrappedPfUnlink(fuse_req_t req, uint64_t parent, const char* nam
 // names must be rejected before the real directory delete runs.
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1248
 extern "C" void WrappedPfRmdir(fuse_req_t req, uint64_t parent, const char* name) {
+    RecordMonitorEvent(req, "DELETE", parent, name);
     RuntimeState::RememberFuseSession(req);
     const HiddenNamedTargetKind kind =
         ClassifyHiddenNamedTarget(RuntimeState::ReqUid(req), parent, name);
@@ -447,6 +456,7 @@ extern "C" void WrappedPfRename(fuse_req_t req, uint64_t parent, const char* nam
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#2121
 extern "C" void WrappedPfCreate(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode,
                                 void* fi) {
+    RecordMonitorEvent(req, "CREATE", parent, name);
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     const HiddenNamedTargetKind kind = ClassifyHiddenNamedTarget(uid, parent, name);
@@ -1064,6 +1074,7 @@ extern "C" ssize_t WrappedLgetxattr(const char* path, const char* name, void* va
 // Even if the named FUSE wrappers are missed on a device-specific path, lower-fs mkdir/mknod/open
 // calls still carry the final child path. These libc hooks are the last fallback for create/mkdir.
 extern "C" int WrappedMkdirLibc(const char* path, mode_t mode) {
+    RecordMonitorEventPath(gActiveCreateUid, "CREATE", path);
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     const uint32_t uid = gActiveCreateUid;
     const bool hidden = ShouldHideLowerFsCreatePath(pathView);
@@ -1083,6 +1094,7 @@ extern "C" int WrappedMkdirLibc(const char* path, mode_t mode) {
 }
 
 extern "C" int WrappedMknod(const char* path, mode_t mode, dev_t dev) {
+    RecordMonitorEventPath(gActiveCreateUid, "CREATE", path);
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     const uint32_t uid = gActiveCreateUid;
     const bool hidden = ShouldHideLowerFsCreatePath(pathView);
@@ -1103,6 +1115,11 @@ extern "C" int WrappedMknod(const char* path, mode_t mode, dev_t dev) {
 }
 
 extern "C" int WrappedOpen(const char* path, int flags, ...) {
+    if ((flags & O_CREAT) == 0) {
+        RecordMonitorEventPath(gActiveCreateUid, "OPEN", path);
+    } else {
+        RecordMonitorEventPath(gActiveCreateUid, "CREATE", path);
+    }
     mode_t mode = 0;
     if ((flags & O_CREAT) != 0) {
         va_list args;
@@ -1136,6 +1153,11 @@ extern "C" int WrappedOpen(const char* path, int flags, ...) {
 }
 
 extern "C" int WrappedOpen2(const char* path, int flags) {
+    if ((flags & O_CREAT) == 0) {
+        RecordMonitorEventPath(gActiveCreateUid, "OPEN", path);
+    } else {
+        RecordMonitorEventPath(gActiveCreateUid, "CREATE", path);
+    }
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     const uint32_t uid = gActiveCreateUid;
     const bool hidden = (flags & O_CREAT) != 0 && ShouldHideLowerFsCreatePath(pathView);

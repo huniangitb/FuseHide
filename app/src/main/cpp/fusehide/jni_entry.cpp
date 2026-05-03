@@ -138,6 +138,21 @@ JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBrid
     fusehide::ApplyHideConfig(std::move(config));
 }
 
+// 供 JNI 获取当前监控事件的实现
+extern std::mutex gMonitorMutex;
+extern std::vector<std::string> gMonitorQueue;
+
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_fetchMonitorEvents(JNIEnv* env,
+                                                                               jclass) {
+    std::vector<std::string> events;
+    {
+        std::lock_guard<std::mutex> lock(fusehide::gMonitorMutex);
+        events.swap(fusehide::gMonitorQueue);
+    }
+    return VectorToJavaStringArray(env, events);
+}
+
 JNIEXPORT jint JNICALL Java_io_github_xiaotong6666_fusehide_Utils_rmdir(JNIEnv* env, jclass clazz,
                                                                         jstring path) {
     (void)clazz;
