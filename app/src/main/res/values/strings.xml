@@ -2,8 +2,16 @@
     <string name="app_name">FuseHide</string>
     <string name="home_subtitle_policy">Adjust the runtime hide config and verify what MediaProvider is actually using.</string>
     <string name="home_subtitle_probe">Run direct path checks against the hooked MediaProvider process.</string>
+    <string name="home_subtitle_monitor">FUSE File Action Monitoring (Open/Create/Delete).</string>
     <string name="tab_policy">Config</string>
     <string name="tab_probe">Probe</string>
+    <string name="tab_monitor">Monitor</string>
+    <string name="monitor_start">Start Monitor</string>
+    <string name="monitor_stop">Stop Monitor</string>
+    <string name="monitor_clear">Clear Log</string>
+    <string name="monitor_empty">No events yet.</string>
+    <string name="monitor_search">Search logs (App, Path, Op)...</string>
+    
     <string name="section_runtime_policy">Runtime Config</string>
     <string name="section_runtime_policy_desc">Edit the hide config saved by the app and push it into the hooked MediaProvider process.</string>
     <string name="section_editable_draft">Editable Config</string>

@@ -2,8 +2,10 @@
     <string name="app_name">FuseHide</string>
     <string name="home_subtitle_policy">Die Laufzeit-Konfiguration zum Ausblenden anpassen und prüfen, welche Konfiguration MediaProvider tatsächlich verwendet.</string>
     <string name="home_subtitle_probe">Direkte Pfadprüfungen für den eingehakten MediaProvider-Prozess ausführen.</string>
+    <string name="home_subtitle_monitor">Echtzeit-Überwachung der Dateioperationen.</string>
     <string name="tab_policy">Konfiguration</string>
     <string name="tab_probe">Prüfung</string>
+    <string name="tab_monitor">Überwachung</string>
     <string name="section_runtime_policy">Laufzeit-Konfiguration</string>
     <string name="section_runtime_policy_desc">Die von der App gespeicherte Ausblend-Konfiguration bearbeiten und in den eingehakten MediaProvider-Prozess übertragen.</string>
     <string name="section_editable_draft">Konfiguration bearbeiten</string>
@@ -91,4 +93,8 @@
     <string name="diff_summary_mismatch">Die nicht gespeicherte Konfiguration stimmt nicht mit der angewendeten MediaProvider-Konfiguration überein.</string>
     <string name="diff_summary_match">Die nicht gespeicherte Konfiguration stimmt mit der angewendeten MediaProvider-Konfiguration überein.</string>
     <string name="probe_output_empty">Noch keine Prüfausgabe.</string>
+    <string name="monitor_start">Überwachung starten</string>
+    <string name="monitor_stop">Überwachung stoppen</string>
+    <string name="monitor_clear">Protokoll löschen</string>
+    <string name="monitor_empty">Keine Ereignisse.</string>
 </resources>

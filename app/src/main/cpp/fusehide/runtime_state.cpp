@@ -73,6 +73,44 @@ thread_local uint64_t gPendingHiddenErrReqUnique = 0;
 thread_local int gPendingHiddenErrno = 0;
 thread_local uint64_t gCurrentReaddirReqUnique = 0;
 
+std::mutex gMonitorMutex;
+std::vector<std::string> gMonitorQueue;
+
+extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name) {
+    uint32_t uid = req != nullptr ? RuntimeState::ReqUid(req) : 0;
+    std::string path;
+    if (auto parentPath = LookupTrackedPathForInode(parentIno)) {
+        path = HiddenPathPolicy::JoinPathComponent(*parentPath, name ? name : "");
+    } else {
+        path = "ino:" + std::to_string(parentIno) + "/" + (name ? name : "");
+    }
+    std::lock_guard<std::mutex> lock(gMonitorMutex);
+    if (gMonitorQueue.size() < 2000) {
+        gMonitorQueue.push_back(std::string(type) + "|" + std::to_string(uid) + "|" + path);
+    }
+}
+
+extern "C" void RecordMonitorEventIno(fuse_req_t req, const char* type, uint64_t ino) {
+    uint32_t uid = req != nullptr ? RuntimeState::ReqUid(req) : 0;
+    std::string path;
+    if (auto p = LookupTrackedPathForInode(ino)) {
+        path = *p;
+    } else {
+        path = "ino:" + std::to_string(ino);
+    }
+    std::lock_guard<std::mutex> lock(gMonitorMutex);
+    if (gMonitorQueue.size() < 2000) {
+        gMonitorQueue.push_back(std::string(type) + "|" + std::to_string(uid) + "|" + path);
+    }
+}
+
+extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const char* path) {
+    std::lock_guard<std::mutex> lock(gMonitorMutex);
+    if (gMonitorQueue.size() < 2000) {
+        gMonitorQueue.push_back(std::string(type) + "|" + std::to_string(uid) + "|" + (path ? path : ""));
+    }
+}
+
 namespace ReplyErrorBridge {
 
 namespace {

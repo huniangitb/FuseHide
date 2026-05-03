@@ -13,9 +13,8 @@
 // limitations under the License.
 
 #include "fusehide/state.hpp"
-
+std::atomic<bool> gMonitorEnabled{false};
 namespace fusehide {
-
 UHasBinaryPropertyFn gUHasBinaryProperty = u_hasBinaryProperty;
 HookInstaller gHookInstaller = nullptr;
 JavaVM* gJavaVm = nullptr;
@@ -120,6 +119,34 @@ JNIEnv* GetJniEnv(bool* didAttach) {
 }
 
 }  // namespace
+
+
+
+void ReportFileEvent(const char* eventType, const char* path, uint32_t uid) {
+    bool didAttach = false;
+    JNIEnv* env = GetJniEnv(&didAttach);
+    if (env == nullptr) return;
+    
+    jclass entryClass = env->FindClass("io/github/xiaotong6666/fusehide/Entry");
+    if (entryClass != nullptr) {
+        jmethodID reportMethod = env->GetStaticMethodID(entryClass, "reportFileEvent", "(Ljava/lang/String;Ljava/lang/String;I)V");
+        if (reportMethod != nullptr && !env->ExceptionCheck()) {
+            jstring jEventType = env->NewStringUTF(eventType);
+            jstring jPath = env->NewStringUTF(path);
+            env->CallStaticVoidMethod(entryClass, reportMethod, jEventType, jPath, (jint)uid);
+            env->DeleteLocalRef(jEventType);
+            env->DeleteLocalRef(jPath);
+        }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+        env->DeleteLocalRef(entryClass);
+    }
+    
+    if (didAttach && gJavaVm != nullptr) {
+        gJavaVm->DetachCurrentThread();
+    }
+}
 
 // Query PackageManager once per uid and cache the result for hot FUSE paths.
 std::optional<bool> ResolveShouldHideUidWithPackageManager(uint32_t uid) {
