@@ -1228,8 +1228,9 @@ void InstallAdvancedCoreHooks(const ModuleInfo& module, CoreHookStatus* status) 
     }
 
     const bool useRuntimeElf = module.path.find("!/") != std::string::npos;
-    const int ps = getpagesize();
+    
     if (useRuntimeElf) {
+    const int ps = getpagesize();
         auto runtimeDyn = ParseRuntimeDynamicInfo(module);
         if (runtimeDyn.has_value()) {
             if (!status->strcasecmp) {
