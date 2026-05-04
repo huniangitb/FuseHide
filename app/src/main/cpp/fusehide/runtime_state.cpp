@@ -13,10 +13,10 @@
 // limitations under the License.
 
 #include "state.hpp"
+#include <fnmatch.h>
 
 namespace fusehide {
 
-// Hook state for libfuse_jni.so running inside the MediaProvider process.
 void* gOriginalPfLookup = nullptr;
 void* gOriginalPfLookupPostfilter = nullptr;
 void* gOriginalPfAccess = nullptr;
@@ -77,6 +77,7 @@ std::mutex gMonitorMutex;
 std::vector<std::string> gMonitorQueue;
 
 extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name) {
+    if (!gMonitorEnabled.load(std::memory_order_relaxed)) return;
     uint32_t uid = req != nullptr ? RuntimeState::ReqUid(req) : 0;
     std::string path;
     if (auto parentPath = LookupTrackedPathForInode(parentIno)) {
@@ -91,6 +92,7 @@ extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t pa
 }
 
 extern "C" void RecordMonitorEventIno(fuse_req_t req, const char* type, uint64_t ino) {
+    if (!gMonitorEnabled.load(std::memory_order_relaxed)) return;
     uint32_t uid = req != nullptr ? RuntimeState::ReqUid(req) : 0;
     std::string path;
     if (auto p = LookupTrackedPathForInode(ino)) {
@@ -105,6 +107,7 @@ extern "C" void RecordMonitorEventIno(fuse_req_t req, const char* type, uint64_t
 }
 
 extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const char* path) {
+    if (!gMonitorEnabled.load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lock(gMonitorMutex);
     if (gMonitorQueue.size() < 2000) {
         gMonitorQueue.push_back(std::string(type) + "|" + std::to_string(uid) + "|" + (path ? path : ""));
@@ -283,11 +286,6 @@ uint32_t RuntimeState::ReqUid(fuse_req_t req) {
     if (req == nullptr) {
         return 0;
     }
-    // The reverse-engineered device build reads req->ctx.uid from fuse_req + 0x3c in pf_getattr()
-    // and related handlers. AOSP accesses req->ctx.uid directly in C++, but our low-level hooks
-    // only receive the opaque request pointer, so this mirrors the verified device layout. AOSP
-    // reference: jni/FuseDaemon.cpp#2134 and #2145
-    // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#2134
     return *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(req) + 0x3c);
 }
 
@@ -297,8 +295,6 @@ void RuntimeState::RememberFuseSession(fuse_req_t req) {
     }
 }
 
-// Shared dentry cache is not scoped per uid. Once another app resolves the hidden entry, the
-// target uid can reuse that positive cache unless we actively invalidate the root dentry.
 void RuntimeState::ScheduleHiddenEntryInvalidation() {
     auto notifyEntry =
         reinterpret_cast<int (*)(void*, uint64_t, const char*, size_t)>(gOriginalNotifyInvalEntry);
@@ -364,7 +360,6 @@ void RuntimeState::ScheduleSpecificEntryInvalidation(uint64_t parent, std::strin
     }).detach();
 }
 
-// Track subtree inodes so later getattr/readdir replies can also be forced uncached.
 void RuntimeState::ScheduleHiddenInodeInvalidation(uint64_t ino) {
     auto notifyInode =
         reinterpret_cast<int (*)(void*, uint64_t, off_t, off_t)>(gOriginalNotifyInvalInode);
@@ -385,10 +380,6 @@ std::string InodePath(uint64_t ino) {
         return "(ROOT)";
     char buf[64];
     std::snprintf(buf, sizeof(buf), "(%p)", (void*)ino);
-    // Keep inode values opaque in debug output.
-    // On the analyzed device build, node::BuildPath() is a C++ member function with an
-    // out-parameter return ABI and internal locking, so this logging helper must not assume
-    // that an inode value can be converted into a valid node object or path string.
     return std::string(buf);
 }
 
@@ -433,8 +424,6 @@ std::optional<HiddenNamedTargetKind> ClassifyHiddenNamedTargetByTrackedPath(uint
     return std::nullopt;
 }
 
-// Classify the current name-based operation as either the hidden root entry itself or a descendant
-// below a previously learned hidden subtree inode.
 HiddenNamedTargetKind ClassifyHiddenNamedTarget(uint32_t uid, uint64_t parent, const char* name) {
     if (!IsTestHiddenUid(uid) || name == nullptr) {
         return HiddenNamedTargetKind::None;
@@ -585,13 +574,6 @@ int MaybeRewriteHiddenLeakErrno(fuse_req_t req, int err, const char* caller) {
     return err;
 }
 
-// Device reverse engineering shows make_node_entry() and create_handle_for_node() both consult
-// fuse->ShouldNotCache(path). Matching that behavior is what keeps positive dentries and file-cache
-// state from being reused across UIDs.
-// AOSP references: jni/FuseDaemon.cpp#347, #510, and #1428
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#347
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#510
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1428
 extern "C" bool WrappedShouldNotCache(void* fuse, const std::string& path) {
     if (IsAnyHiddenSubtreePath(path)) {
         DebugLogPrint(4, "force uncached subtree path=%s", DebugPreview(path).c_str());
@@ -803,9 +785,6 @@ bool HiddenPathPolicy::IsHiddenRootDirectoryPath(std::string_view path) {
 }
 
 bool IsParentOfExactHiddenTargetPath(std::string_view path) {
-    // Root targets and nested relative targets need different list filtering keys. Root-level
-    // targets can be recognized by child name alone under /storage/emulated/0, but nested targets
-    // need the exact visible parent path so reply_buf can rebuild parentPath + childName.
     for (const auto& root : kVisibleStorageRoots) {
         if (path == root) {
             const auto config = CurrentHideConfig();
@@ -842,6 +821,71 @@ std::string HiddenPathPolicy::JoinPathComponent(std::string_view parent, std::st
     }
     joined.append(child.data(), child.size());
     return joined;
+}
+
+bool HiddenPathPolicy::IsReadOnly(uint32_t uid, const std::string& path) {
+    auto config = CurrentHideConfig();
+    if (config->readOnlyRules.empty()) return false;
+    
+    auto pkgs = GetPackagesForUid(uid);
+    for (const auto& rule : config->readOnlyRules) {
+        bool pkgMatch = rule.packageName.empty() || rule.packageName == "*";
+        if (!pkgMatch) {
+            for (const auto& pkg : pkgs) {
+                if (pkg == rule.packageName) {
+                    pkgMatch = true;
+                    break;
+                }
+            }
+        }
+        if (pkgMatch) {
+            if (rule.pattern.back() == '*') {
+                std::string prefix = rule.pattern.substr(0, rule.pattern.length() - 1);
+                if (path.starts_with(prefix)) return true;
+            } else if (fnmatch(rule.pattern.c_str(), path.c_str(), FNM_PATHNAME) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::string HiddenPathPolicy::GetRedirectTarget(uint32_t uid, const std::string& path) {
+    auto config = CurrentHideConfig();
+    if (config->redirectRules.empty()) return path;
+    
+    auto pkgs = GetPackagesForUid(uid);
+    for (const auto& rule : config->redirectRules) {
+        bool pkgMatch = rule.packageName.empty() || rule.packageName == "*";
+        if (!pkgMatch) {
+            for (const auto& pkg : pkgs) {
+                if (pkg == rule.packageName) {
+                    pkgMatch = true;
+                    break;
+                }
+            }
+        }
+        if (pkgMatch) {
+            std::string outTarget;
+            if (rule.pattern.back() == '*') {
+                std::string prefix = rule.pattern.substr(0, rule.pattern.length() - 1);
+                if (path.starts_with(prefix)) {
+                    std::string suffix = path.substr(prefix.length());
+                    if (!rule.target.empty() && rule.target.back() == '/' && !suffix.empty() && suffix.front() == '/') {
+                        outTarget = rule.target + suffix.substr(1);
+                    } else if (!rule.target.empty() && rule.target.back() != '/' && !suffix.empty() && suffix.front() != '/') {
+                        outTarget = rule.target + "/" + suffix;
+                    } else {
+                        outTarget = rule.target + suffix;
+                    }
+                    return outTarget;
+                }
+            } else if (fnmatch(rule.pattern.c_str(), path.c_str(), FNM_PATHNAME) == 0) {
+                return rule.target;
+            }
+        }
+    }
+    return path;
 }
 
 size_t AlignDirentName(size_t nameLen) {
@@ -898,8 +942,6 @@ bool ShouldFilterDirentForParentPath(uint32_t uid, std::string_view parentPath, 
     if (!HiddenPathPolicy::IsTestHiddenUid(uid)) {
         return false;
     }
-    // Prefer exact inode matches when a hidden child inode is already known, then fall back to
-    // exact path matching for the recovered visible parent directory.
     if (ShouldFilterTrackedHiddenDirentInode(uid, childIno, name)) {
         return true;
     }
@@ -1049,17 +1091,11 @@ bool BuildFilteredDirentplusPayloadForParentPath(const char* data, size_t size, 
     return removed != 0;
 }
 
-// AOSP only decides dentry caching from the resolved path, not from uid policy.
-// Once the daemon sees any path inside the hidden subtree, force cache invalidation globally for
-// that subtree so positive dentries from other apps stop leaking into the target uid.
 void NoteHiddenSubtreePathForCache(std::string_view path) {
     if (!IsAnyHiddenSubtreePath(path)) {
         return;
     }
 
-    // AOSP get_entry_timeout()/pf_getattr cache decisions are path-based rather than uid-based.
-    // Once this subtree is observed anywhere in the daemon, proactively invalidate the root dentry
-    // so a positive lookup seeded by another uid does not stay shared in kernel/VFS cache.
     RuntimeState::ScheduleHiddenEntryInvalidation();
 
     if (gInPfLookup && gCurrentLookupParentInode != 0) {

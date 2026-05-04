@@ -108,7 +108,7 @@ data class MonitorEventItem(
 )
 
 object MonitorLogger {
-    private const val MAX_FILE_SIZE = 1 * 1024 * 1024L // 1MB
+    private const val MAX_FILE_SIZE = 1 * 1024 * 1024L 
     private lateinit var logFile: File
 
     fun init(context: Context) {
@@ -230,6 +230,12 @@ class MainActivity : ComponentActivity() {
     )
     private var hiddenPackagesText by mutableStateOf(
         HideConfigDefaults.toEditorText(HideConfigDefaults.value.hiddenPackages),
+    )
+    private var redirectRulesText by mutableStateOf(
+        HideConfigDefaults.toEditorText(HideConfigDefaults.value.redirectRules),
+    )
+    private var readOnlyRulesText by mutableStateOf(
+        HideConfigDefaults.toEditorText(HideConfigDefaults.value.readOnlyRules),
     )
     private var pathText by mutableStateOf(defaultPath())
     private var pathText2 by mutableStateOf("")
@@ -393,13 +399,18 @@ class MainActivity : ComponentActivity() {
                     hideAllRootEntriesExemptionsText = hideAllRootEntriesExemptionsText,
                     hiddenTargetsText = hiddenTargetsText,
                     hiddenPackagesText = hiddenPackagesText,
+                    redirectRulesText = redirectRulesText,
+                    readOnlyRulesText = readOnlyRulesText,
                     pathText = pathText,
                     pathText2 = pathText2,
                     outputText = outputText,
                     isMonitoring = isMonitoring,
                     monitorEvents = monitorEvents,
                     getAppName = ::getAppName,
-                    onMonitoringToggle = { isMonitoring = it },
+                    onMonitoringToggle = { 
+                        isMonitoring = it
+                        HideConfigNativeBridge.setMonitorEnabled(it)
+                    },
                     onMonitorClear = { 
                         monitorEvents.clear()
                         MonitorLogger.clear()
@@ -409,6 +420,8 @@ class MainActivity : ComponentActivity() {
                     onHideAllRootEntriesExemptionsChanged = { hideAllRootEntriesExemptionsText = it },
                     onHiddenTargetsChanged = { hiddenTargetsText = it },
                     onHiddenPackagesChanged = { hiddenPackagesText = it },
+                    onRedirectRulesChanged = { redirectRulesText = it },
+                    onReadOnlyRulesChanged = { readOnlyRulesText = it },
                     onSaveConfigClick = ::saveHideConfig,
                     onApplyConfigClick = ::applyHideConfig,
                     onResetConfigClick = ::resetHideConfigToDefaults,
@@ -716,6 +729,8 @@ class MainActivity : ComponentActivity() {
         hideAllRootEntriesExemptionsText = HideConfigDefaults.toEditorText(config.hideAllRootEntriesExemptions)
         hiddenTargetsText = HideConfigDefaults.toEditorText(config.hiddenRootEntryNames + config.hiddenRelativePaths)
         hiddenPackagesText = HideConfigDefaults.toEditorText(config.hiddenPackages)
+        redirectRulesText = HideConfigDefaults.toEditorText(config.redirectRules)
+        readOnlyRulesText = HideConfigDefaults.toEditorText(config.readOnlyRules)
     }
 
     private fun parseHiddenTargetRules(text: String): Pair<List<String>, List<String>> {
@@ -740,6 +755,8 @@ class MainActivity : ComponentActivity() {
             hiddenRootEntryNames = rootNames,
             hiddenRelativePaths = relativePaths,
             hiddenPackages = HideConfigDefaults.parseEditorText(hiddenPackagesText),
+            redirectRules = HideConfigDefaults.parseEditorText(redirectRulesText),
+            readOnlyRules = HideConfigDefaults.parseEditorText(readOnlyRulesText)
         )
     }
 
@@ -780,6 +797,12 @@ class MainActivity : ComponentActivity() {
         append("hiddenPackages=\n")
         if (config.hiddenPackages.isEmpty()) append("(empty)\n")
         config.hiddenPackages.forEach { append("- $it\n") }
+        append("redirectRules=\n")
+        if (config.redirectRules.isEmpty()) append("(empty)\n")
+        config.redirectRules.forEach { append("- $it\n") }
+        append("readOnlyRules=\n")
+        if (config.readOnlyRules.isEmpty()) append("(empty)\n")
+        config.readOnlyRules.forEach { append("- $it\n") }
     }
 
     private fun buildDraftVsAppliedDiff(draft: HideConfig, applied: HideConfig?): HideConfigDiff {
@@ -821,13 +844,18 @@ class MainActivity : ComponentActivity() {
             append(section("hideAllRootEntriesExemptions", draft.hideAllRootEntriesExemptions, applied.hideAllRootEntriesExemptions)).append("\n")
             append(section("hiddenRootEntryNames", draft.hiddenRootEntryNames, applied.hiddenRootEntryNames)).append("\n")
             append(section("hiddenRelativePaths", draft.hiddenRelativePaths, applied.hiddenRelativePaths)).append("\n")
-            append(section("hiddenPackages", draft.hiddenPackages, applied.hiddenPackages))
+            append(section("hiddenPackages", draft.hiddenPackages, applied.hiddenPackages)).append("\n")
+            append(section("redirectRules", draft.redirectRules, applied.redirectRules)).append("\n")
+            append(section("readOnlyRules", draft.readOnlyRules, applied.readOnlyRules))
         }
         val hasDifferences = !boolMatches ||
             draft.hideAllRootEntriesExemptions.toSet() != applied.hideAllRootEntriesExemptions.toSet() ||
             draft.hiddenRootEntryNames.toSet() != applied.hiddenRootEntryNames.toSet() ||
             draft.hiddenRelativePaths.toSet() != applied.hiddenRelativePaths.toSet() ||
-            draft.hiddenPackages.toSet() != applied.hiddenPackages.toSet()
+            draft.hiddenPackages.toSet() != applied.hiddenPackages.toSet() ||
+            draft.redirectRules.toSet() != applied.redirectRules.toSet() ||
+            draft.readOnlyRules.toSet() != applied.readOnlyRules.toSet()
+            
         val summary = if (hasDifferences) {
             getString(R.string.diff_summary_mismatch)
         } else {
@@ -903,6 +931,8 @@ private fun fuseHideHomeScreen(
     hideAllRootEntriesExemptionsText: String,
     hiddenTargetsText: String,
     hiddenPackagesText: String,
+    redirectRulesText: String,
+    readOnlyRulesText: String,
     pathText: String,
     pathText2: String,
     outputText: String,
@@ -916,6 +946,8 @@ private fun fuseHideHomeScreen(
     onHideAllRootEntriesExemptionsChanged: (String) -> Unit,
     onHiddenTargetsChanged: (String) -> Unit,
     onHiddenPackagesChanged: (String) -> Unit,
+    onRedirectRulesChanged: (String) -> Unit,
+    onReadOnlyRulesChanged: (String) -> Unit,
     onSaveConfigClick: () -> Unit,
     onApplyConfigClick: () -> Unit,
     onResetConfigClick: () -> Unit,
@@ -1022,11 +1054,15 @@ private fun fuseHideHomeScreen(
                     hideAllRootEntriesExemptionsText = hideAllRootEntriesExemptionsText,
                     hiddenTargetsText = hiddenTargetsText,
                     hiddenPackagesText = hiddenPackagesText,
+                    redirectRulesText = redirectRulesText,
+                    readOnlyRulesText = readOnlyRulesText,
                     onStatusClick = onStatusClick,
                     onEnableHideAllRootEntriesChanged = onEnableHideAllRootEntriesChanged,
                     onHideAllRootEntriesExemptionsChanged = onHideAllRootEntriesExemptionsChanged,
                     onHiddenTargetsChanged = onHiddenTargetsChanged,
                     onHiddenPackagesChanged = onHiddenPackagesChanged,
+                    onRedirectRulesChanged = onRedirectRulesChanged,
+                    onReadOnlyRulesChanged = onReadOnlyRulesChanged,
                     onSaveConfigClick = onSaveConfigClick,
                     onApplyConfigClick = onApplyConfigClick,
                     onResetConfigClick = onResetConfigClick,
@@ -1193,11 +1229,15 @@ private fun configScreen(
     hideAllRootEntriesExemptionsText: String,
     hiddenTargetsText: String,
     hiddenPackagesText: String,
+    redirectRulesText: String,
+    readOnlyRulesText: String,
     onStatusClick: () -> Unit,
     onEnableHideAllRootEntriesChanged: (Boolean) -> Unit,
     onHideAllRootEntriesExemptionsChanged: (String) -> Unit,
     onHiddenTargetsChanged: (String) -> Unit,
     onHiddenPackagesChanged: (String) -> Unit,
+    onRedirectRulesChanged: (String) -> Unit,
+    onReadOnlyRulesChanged: (String) -> Unit,
     onSaveConfigClick: () -> Unit,
     onApplyConfigClick: () -> Unit,
     onResetConfigClick: () -> Unit,
@@ -1376,6 +1416,47 @@ private fun configScreen(
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
+
+            Spacer(Modifier.height(10.dp))
+            TextField(
+                value = redirectRulesText,
+                onValueChange = onRedirectRulesChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = stringResource(R.string.field_redirect_rules),
+                backgroundColor = MiuixTheme.colorScheme.surfaceContainerHighest,
+                labelColor = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                borderColor = MiuixTheme.colorScheme.primary,
+                textStyle = MiuixTheme.textStyles.main.copy(color = MiuixTheme.colorScheme.onSurfaceSecondary),
+                minLines = 5,
+                maxLines = 5,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.field_redirect_rules_help),
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+
+            Spacer(Modifier.height(10.dp))
+            TextField(
+                value = readOnlyRulesText,
+                onValueChange = onReadOnlyRulesChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = stringResource(R.string.field_readonly_rules),
+                backgroundColor = MiuixTheme.colorScheme.surfaceContainerHighest,
+                labelColor = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                borderColor = MiuixTheme.colorScheme.primary,
+                textStyle = MiuixTheme.textStyles.main.copy(color = MiuixTheme.colorScheme.onSurfaceSecondary),
+                minLines = 5,
+                maxLines = 5,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.field_readonly_rules_help),
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            
             Spacer(Modifier.height(14.dp))
             dualActionRow(
                 primaryLabel = stringResource(R.string.button_apply),
@@ -2006,6 +2087,8 @@ private fun previewFuseHideHomeScreen() {
             hideAllRootEntriesExemptionsText = "Android\nDCIM\nDocument\nDownload\nMovies\nPictures",
             hiddenTargetsText = "xinhao\nMT2",
             hiddenPackagesText = "com.eltavine.duckdetector\nio.github.xiaotong6666.fusehide\nio.github.a13e300.fusefixer",
+            redirectRulesText = "",
+            readOnlyRulesText = "",
             pathText = "/storage/emulated/0/Android",
             pathText2 = "",
             outputText = "Stat /storage/emulated/0/Android -> OK",
@@ -2019,6 +2102,8 @@ private fun previewFuseHideHomeScreen() {
             onHideAllRootEntriesExemptionsChanged = {},
             onHiddenTargetsChanged = {},
             onHiddenPackagesChanged = {},
+            onRedirectRulesChanged = {},
+            onReadOnlyRulesChanged = {},
             onSaveConfigClick = {},
             onApplyConfigClick = {},
             onResetConfigClick = {},

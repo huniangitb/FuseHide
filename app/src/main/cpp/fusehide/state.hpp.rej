@@ -1,0 +1,46 @@
+--- cpp/fusehide/state.hpp
++++ cpp/fusehide/state.hpp
+@@ -95,6 +95,20 @@
+ extern std::mutex gMonitorMutex;
+ extern std::vector<std::string> gMonitorQueue;
+ 
++extern thread_local uint32_t gActiveUid;
++
++class ScopedActiveUid final {
++   public:
++    explicit ScopedActiveUid(uint32_t uid) : previous_(gActiveUid) {
++        gActiveUid = uid;
++    }
++    ~ScopedActiveUid() {
++        gActiveUid = previous_;
++    }
++   private:
++    uint32_t previous_;
++};
++
+ extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name);
+ extern "C" void RecordMonitorEventIno(fuse_req_t req, const char* type, uint64_t ino);
+ extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const char* path);
+@@ -194,6 +208,13 @@
+     }
+ }
+ 
++struct RuleMatch {
++    bool matched;
++    std::string redirected_path;
++    bool ro;
++};
++RuleMatch MatchPathRule(uint32_t uid, const char* path);
++
+ std::optional<bool> ResolveShouldHideUidWithPackageManager(uint32_t uid);
+ HideConfig DefaultHideConfig();
+ std::shared_ptr<const HideConfig> CurrentHideConfig();
+@@ -253,6 +274,8 @@
+     static void ScheduleHiddenInodeInvalidation(uint64_t ino);
+ };
+ 
++JNIEnv* GetJniEnv(bool* didAttach);
++std::vector<std::string> GetPackagesForUidCached(uint32_t uid);
+ bool IsTestHiddenUid(uint32_t uid);
+ bool ShouldHideTestPath(uint32_t uid, std::string_view path);
+ std::string EscapeForLog(const uint8_t* data, size_t length);

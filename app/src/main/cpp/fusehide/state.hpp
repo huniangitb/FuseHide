@@ -63,6 +63,20 @@ struct fuse_entry_param {
     uint64_t bpf_fd;
 };
 
+struct fuse_file_info {
+    int flags;
+    unsigned int writepage : 1;
+    unsigned int direct_io : 1;
+    unsigned int keep_cache : 1;
+    unsigned int flush : 1;
+    unsigned int nonseekable : 1;
+    unsigned int flock_release : 1;
+    unsigned int cache_readdir : 1;
+    unsigned int padding : 25;
+    uint64_t fh;
+    uint64_t lock_owner;
+};
+
 struct fuse_entry_out;
 struct fuse_entry_bpf_out;
 struct fuse_dirent {
@@ -102,11 +116,7 @@ extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const cha
 inline constexpr const char* kLogTag = "FuseHide";
 inline constexpr const char* kTargetLibrary = "libfuse_jni.so";
 inline constexpr std::string_view kVisibleStorageRoots[] = {"/storage/emulated/0"};
-// Optional stress mode: when enabled, treat every first-level entry under kVisibleStorageRoots
-// as hidden for test UIDs. Keep disabled by default to avoid breaking normal app behavior.
 inline constexpr bool kEnableHideAllRootEntries = false;
-// Entries listed here remain visible even when kEnableHideAllRootEntries is enabled.
-// Keeping Android visible avoids breaking /sdcard/Android/data and /sdcard/Android/obb.
 inline constexpr std::string_view kHideAllRootEntriesExemptions[] = {
     "Android", "DCIM", "Document", "Download", "Movies", "Pictures",
 };
@@ -145,19 +155,22 @@ using LowerFsDirentFilterFn = bool (*)(const dirent& entry);
 using AddDirectoryEntriesFromLowerFsFn = void (*)(DIR* dirp, LowerFsDirentFilterFn filter,
                                                   DirectoryEntries* entries);
 
+struct PathRule {
+    std::string packageName;
+    std::string pattern;
+    std::string target;
+};
+
 struct HideConfig {
     bool enableHideAllRootEntries = false;
     std::vector<std::string> hideAllRootEntriesExemptions;
     std::vector<std::string> hiddenRootEntryNames;
     std::vector<std::string> hiddenRelativePaths;
     std::vector<std::string> hiddenPackages;
+    std::vector<PathRule> redirectRules;
+    std::vector<PathRule> readOnlyRules;
 };
 
-// These RVAs are device-specific addresses from reverse-engineered libfuse_jni.so builds.
-// The production device library we analyzed is stripped, so internal helpers such as
-// is_app_accessible_path and several pf_* handlers are not always recoverable by name from the
-// shipped ELF. Keep these offsets only as a last resort after symbol-based lookup fails, and
-// select among known profiles at runtime instead of baking one device's layout globally.
 struct DeviceHookProfile {
     const char* name;
     uintptr_t isAppAccessiblePathOffset;
@@ -180,9 +193,6 @@ struct DeviceHookProfile {
     uintptr_t pfReaddirplusOffset;
 };
 
-// Reverse-engineered record: ShouldNotCache @ 0x0017dc64, do_readdir_common @ 0x0018036c,
-// GetDirectoryEntries @ 0x0018a3ec, addDirectoryEntriesFromLowerFs @ 0x0018be00,
-// thunk @ 0x001fdcf8 in Ghidra with image base 0x00100000.
 inline constexpr DeviceHookProfile kDeviceHookProfileLegacy = {
     .name = "legacy_device",
     .isAppAccessiblePathOffset = 0x0007bb5c,
@@ -205,9 +215,6 @@ inline constexpr DeviceHookProfile kDeviceHookProfileLegacy = {
     .pfReaddirplusOffset = 0x0007b320,
 };
 
-// Reverse-engineered record: ShouldNotCache @ 0x001eb658, do_readdir_common @ 0x001ee694,
-// GetDirectoryEntries @ 0x001f8838, addDirectoryEntriesFromLowerFs @ 0x001fa180,
-// thunk @ 0x002073d0 in Ghidra with image base 0x00100000.
 inline constexpr DeviceHookProfile kDeviceHookProfileBp2a = {
     .name = "bp2a_device",
     .isAppAccessiblePathOffset = 0x000e9b94,
@@ -298,6 +305,10 @@ extern IsBpfBackingPathFn gOriginalIsBpfBackingPath;
 extern void* gOriginalStrcasecmp;
 extern void* gOriginalEqualsIgnoreCase;
 
+extern void* gOriginalUnlinkLibc;
+extern void* gOriginalRmdirLibc;
+extern void* gOriginalRenameLibc;
+
 extern std::atomic<int> gAppAccessibleLogCount;
 extern std::atomic<int> gPackageOwnedLogCount;
 extern std::atomic<int> gBpfBackingLogCount;
@@ -309,6 +320,8 @@ extern std::atomic<int> gSuspiciousDirectLogCount;
 extern std::mutex gUidHideCacheMutex;
 extern std::unordered_map<uint32_t, bool> gUidHideCache;
 extern std::shared_ptr<const HideConfig> gHideConfig;
+extern std::mutex gUidPackagesCacheMutex;
+extern std::unordered_map<uint32_t, std::vector<std::string>> gUidPackagesCache;
 
 inline bool ShouldLogLimited(std::atomic<int>& counter, int limit = 8) {
     const int old = counter.fetch_add(1, std::memory_order_relaxed);
@@ -322,6 +335,8 @@ inline void DebugLogPrint(int priority, const char* fmt, Args... args) {
     }
 }
 
+std::vector<std::string> GetPackagesForUid(uint32_t uid);
+bool IsUidInPackage(uint32_t uid, const std::string& targetPkg);
 std::optional<bool> ResolveShouldHideUidWithPackageManager(uint32_t uid);
 HideConfig DefaultHideConfig();
 std::shared_ptr<const HideConfig> CurrentHideConfig();
@@ -355,6 +370,8 @@ class HiddenPathPolicy final {
     static std::string JoinPathComponent(std::string_view parent, std::string_view child);
     static bool ShouldFilterHiddenRootDirent(uint32_t uid, uint64_t ino, std::string_view name,
                                              bool requireParentMatch);
+    static bool IsReadOnly(uint32_t uid, const std::string& path);
+    static std::string GetRedirectTarget(uint32_t uid, const std::string& fusePath);
 };
 
 class DirentFilter final {
@@ -468,10 +485,6 @@ extern std::unordered_map<uint32_t, uint32_t> gRecentHiddenParentPathUids;
 extern std::string gRecentHiddenParentPathAnyUid;
 extern uint32_t gRecentHiddenParentPathAnyUidOwner;
 namespace ReplyErrorBridge {
-// Use Original() only when preserving strict "hook backup only" semantics for a wrapper that
-// directly proxies fuse_reply_err itself.
-// Use Reply() for policy/error short-circuit paths; it resolves via Original() first, then dlsym
-// cache, and emits fallback diagnostics when fuse_reply_err cannot be resolved.
 FuseReplyErrFn Original();
 FuseReplyErrFn Resolve();
 std::optional<int> Reply(fuse_req_t req, int err, const char* caller);

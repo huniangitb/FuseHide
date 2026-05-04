@@ -37,6 +37,9 @@ std::mutex gUidHideCacheMutex;
 std::unordered_map<uint32_t, bool> gUidHideCache;
 std::shared_ptr<const HideConfig> gHideConfig = std::make_shared<HideConfig>(DefaultHideConfig());
 
+std::mutex gUidPackagesCacheMutex;
+std::unordered_map<uint32_t, std::vector<std::string>> gUidPackagesCache;
+
 namespace {}  // namespace
 
 HideConfig DefaultHideConfig() {
@@ -68,11 +71,17 @@ void ApplyHideConfig(HideConfig config) {
         std::lock_guard<std::mutex> lock(gUidHideCacheMutex);
         gUidHideCache.clear();
     }
-    DebugLogPrint(4, "applied hide config hide_all=%d exemptions=%zu roots=%zu packages=%zu",
+    {
+        std::lock_guard<std::mutex> lock(gUidPackagesCacheMutex);
+        gUidPackagesCache.clear();
+    }
+    DebugLogPrint(4, "applied hide config hide_all=%d exemptions=%zu roots=%zu packages=%zu redirects=%zu readonlies=%zu",
                   CurrentHideConfig()->enableHideAllRootEntries ? 1 : 0,
                   CurrentHideConfig()->hideAllRootEntriesExemptions.size(),
                   CurrentHideConfig()->hiddenRootEntryNames.size(),
-                  CurrentHideConfig()->hiddenPackages.size());
+                  CurrentHideConfig()->hiddenPackages.size(),
+                  CurrentHideConfig()->redirectRules.size(),
+                  CurrentHideConfig()->readOnlyRules.size());
 }
 
 bool IsHiddenPackageName(std::string_view packageName) {
@@ -87,13 +96,6 @@ bool IsHiddenPackageName(std::string_view packageName) {
 
 namespace {
 
-// Resolve uid -> packages inside the already-hooked MediaProvider process.
-// We intentionally stay inside the current process and ask PackageManager instead of adding
-// a separate framework hook in system_server. The injection entry point is Entry.java, which only
-// loads this library into MediaProvider, so currentApplication() is available here.
-// AOSP reference for the uid flowing into FUSE handlers: jni/FuseDaemon.cpp#1134 and #2121
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1134
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#2121
 JNIEnv* GetJniEnv(bool* didAttach) {
     if (didAttach != nullptr) {
         *didAttach = false;
@@ -119,8 +121,6 @@ JNIEnv* GetJniEnv(bool* didAttach) {
 }
 
 }  // namespace
-
-
 
 void ReportFileEvent(const char* eventType, const char* path, uint32_t uid) {
     bool didAttach = false;
@@ -148,15 +148,26 @@ void ReportFileEvent(const char* eventType, const char* path, uint32_t uid) {
     }
 }
 
-// Query PackageManager once per uid and cache the result for hot FUSE paths.
-std::optional<bool> ResolveShouldHideUidWithPackageManager(uint32_t uid) {
+std::vector<std::string> GetPackagesForUid(uint32_t uid) {
+    {
+        std::lock_guard<std::mutex> lock(gUidPackagesCacheMutex);
+        auto it = gUidPackagesCache.find(uid);
+        if (it != gUidPackagesCache.end()) {
+            return it->second;
+        }
+    }
+
     bool didAttach = false;
     JNIEnv* env = GetJniEnv(&didAttach);
     if (env == nullptr) {
-        return std::nullopt;
+        return {};
     }
 
-    auto finish = [&](std::optional<bool> value) {
+    auto finish = [&](std::vector<std::string> value) {
+        {
+            std::lock_guard<std::mutex> lock(gUidPackagesCacheMutex);
+            gUidPackagesCache[uid] = value;
+        }
         if (didAttach) {
             gJavaVm->DetachCurrentThread();
         }
@@ -166,91 +177,98 @@ std::optional<bool> ResolveShouldHideUidWithPackageManager(uint32_t uid) {
     jclass activityThreadClass = env->FindClass("android/app/ActivityThread");
     if (activityThreadClass == nullptr || env->ExceptionCheck()) {
         env->ExceptionClear();
-        return finish(std::nullopt);
+        return finish({});
     }
-    jmethodID currentApplication = env->GetStaticMethodID(activityThreadClass, "currentApplication",
-                                                          "()Landroid/app/Application;");
+    jmethodID currentApplication = env->GetStaticMethodID(activityThreadClass, "currentApplication", "()Landroid/app/Application;");
     if (currentApplication == nullptr || env->ExceptionCheck()) {
         env->ExceptionClear();
         env->DeleteLocalRef(activityThreadClass);
-        return finish(std::nullopt);
+        return finish({});
     }
     jobject application = env->CallStaticObjectMethod(activityThreadClass, currentApplication);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         env->DeleteLocalRef(activityThreadClass);
-        return finish(std::nullopt);
+        return finish({});
     }
     env->DeleteLocalRef(activityThreadClass);
-    if (application == nullptr) {
-        return finish(std::nullopt);
-    }
+    if (application == nullptr) return finish({});
 
     jclass applicationClass = env->GetObjectClass(application);
-    jmethodID getPackageManager = env->GetMethodID(applicationClass, "getPackageManager",
-                                                   "()Landroid/content/pm/PackageManager;");
+    jmethodID getPackageManager = env->GetMethodID(applicationClass, "getPackageManager", "()Landroid/content/pm/PackageManager;");
     if (getPackageManager == nullptr || env->ExceptionCheck()) {
         env->ExceptionClear();
         env->DeleteLocalRef(applicationClass);
         env->DeleteLocalRef(application);
-        return finish(std::nullopt);
+        return finish({});
     }
     jobject packageManager = env->CallObjectMethod(application, getPackageManager);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         env->DeleteLocalRef(applicationClass);
         env->DeleteLocalRef(application);
-        return finish(std::nullopt);
+        return finish({});
     }
     env->DeleteLocalRef(applicationClass);
     env->DeleteLocalRef(application);
-    if (packageManager == nullptr) {
-        return finish(std::nullopt);
-    }
+    if (packageManager == nullptr) return finish({});
 
     jclass packageManagerClass = env->FindClass("android/content/pm/PackageManager");
-    jmethodID getPackagesForUid =
-        env->GetMethodID(packageManagerClass, "getPackagesForUid", "(I)[Ljava/lang/String;");
+    jmethodID getPackagesForUid = env->GetMethodID(packageManagerClass, "getPackagesForUid", "(I)[Ljava/lang/String;");
     if (getPackagesForUid == nullptr || env->ExceptionCheck()) {
         env->ExceptionClear();
         env->DeleteLocalRef(packageManagerClass);
         env->DeleteLocalRef(packageManager);
-        return finish(std::nullopt);
+        return finish({});
     }
 
-    jobjectArray packages = static_cast<jobjectArray>(
-        env->CallObjectMethod(packageManager, getPackagesForUid, (jint)uid));
+    jobjectArray packages = static_cast<jobjectArray>(env->CallObjectMethod(packageManager, getPackagesForUid, (jint)uid));
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         env->DeleteLocalRef(packageManagerClass);
         env->DeleteLocalRef(packageManager);
-        return finish(std::nullopt);
+        return finish({});
     }
     env->DeleteLocalRef(packageManagerClass);
     env->DeleteLocalRef(packageManager);
 
-    bool shouldHide = false;
+    std::vector<std::string> pkgList;
     if (packages != nullptr) {
         const jsize count = env->GetArrayLength(packages);
         for (jsize i = 0; i < count; ++i) {
             jstring packageName = static_cast<jstring>(env->GetObjectArrayElement(packages, i));
-            if (packageName == nullptr) {
-                continue;
-            }
+            if (packageName == nullptr) continue;
             const char* packageNameChars = env->GetStringUTFChars(packageName, nullptr);
             if (packageNameChars != nullptr) {
-                shouldHide = IsHiddenPackageName(packageNameChars);
+                pkgList.emplace_back(packageNameChars);
                 env->ReleaseStringUTFChars(packageName, packageNameChars);
             }
             env->DeleteLocalRef(packageName);
-            if (shouldHide) {
-                break;
-            }
         }
         env->DeleteLocalRef(packages);
     }
+    return finish(pkgList);
+}
+
+bool IsUidInPackage(uint32_t uid, const std::string& targetPkg) {
+    auto pkgs = GetPackagesForUid(uid);
+    for (const auto& pkg : pkgs) {
+        if (pkg == targetPkg) return true;
+    }
+    return false;
+}
+
+std::optional<bool> ResolveShouldHideUidWithPackageManager(uint32_t uid) {
+    auto pkgs = GetPackagesForUid(uid);
+    bool shouldHide = false;
+    for (const auto& pkg : pkgs) {
+        if (IsHiddenPackageName(pkg)) {
+            shouldHide = true;
+            break;
+        }
+    }
     DebugLogPrint(4, "resolved uid=%u hide=%d", static_cast<unsigned>(uid), shouldHide ? 1 : 0);
-    return finish(shouldHide);
+    return shouldHide;
 }
 
 }  // namespace fusehide

@@ -57,6 +57,31 @@ jobjectArray VectorToJavaStringArray(JNIEnv* env, const std::vector<std::string>
     return array;
 }
 
+std::vector<fusehide::PathRule> ParseRules(const std::vector<std::string>& list, bool isRedirect) {
+    std::vector<fusehide::PathRule> result;
+    for (const auto& line : list) {
+        auto firstPipe = line.find('|');
+        if (firstPipe == std::string::npos) continue;
+        
+        fusehide::PathRule rule;
+        rule.packageName = line.substr(0, firstPipe);
+        
+        if (isRedirect) {
+            auto secondPipe = line.find('|', firstPipe + 1);
+            if (secondPipe == std::string::npos) continue;
+            rule.pattern = line.substr(firstPipe + 1, secondPipe - firstPipe - 1);
+            rule.target = line.substr(secondPipe + 1);
+        } else {
+            rule.pattern = line.substr(firstPipe + 1);
+        }
+        result.push_back(rule);
+    }
+    std::sort(result.begin(), result.end(), [](const fusehide::PathRule& a, const fusehide::PathRule& b) {
+        return a.pattern.length() > b.pattern.length();
+    });
+    return result;
+}
+
 extern "C" {
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
@@ -128,19 +153,18 @@ Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getCurrentHiddenPack
 JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_applyHideConfig(
     JNIEnv* env, jclass, jboolean enableHideAllRootEntries,
     jobjectArray hideAllRootEntriesExemptions, jobjectArray hiddenRootEntryNames,
-    jobjectArray hiddenRelativePaths, jobjectArray hiddenPackages) {
+    jobjectArray hiddenRelativePaths, jobjectArray hiddenPackages,
+    jobjectArray redirectRules, jobjectArray readOnlyRules) {
     fusehide::HideConfig config;
     config.enableHideAllRootEntries = enableHideAllRootEntries == JNI_TRUE;
     config.hideAllRootEntriesExemptions = JStringArrayToVector(env, hideAllRootEntriesExemptions);
     config.hiddenRootEntryNames = JStringArrayToVector(env, hiddenRootEntryNames);
     config.hiddenRelativePaths = JStringArrayToVector(env, hiddenRelativePaths);
     config.hiddenPackages = JStringArrayToVector(env, hiddenPackages);
+    config.redirectRules = ParseRules(JStringArrayToVector(env, redirectRules), true);
+    config.readOnlyRules = ParseRules(JStringArrayToVector(env, readOnlyRules), false);
     fusehide::ApplyHideConfig(std::move(config));
 }
-
-// 供 JNI 获取当前监控事件的实现
-extern std::mutex gMonitorMutex;
-extern std::vector<std::string> gMonitorQueue;
 
 JNIEXPORT jobjectArray JNICALL
 Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_fetchMonitorEvents(JNIEnv* env,
@@ -151,6 +175,11 @@ Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_fetchMonitorEvents(J
         events.swap(fusehide::gMonitorQueue);
     }
     return VectorToJavaStringArray(env, events);
+}
+
+JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_setMonitorEnabled(
+    JNIEnv*, jclass, jboolean enabled) {
+    fusehide::gMonitorEnabled.store(enabled == JNI_TRUE, std::memory_order_release);
 }
 
 JNIEXPORT jint JNICALL Java_io_github_xiaotong6666_fusehide_Utils_rmdir(JNIEnv* env, jclass clazz,

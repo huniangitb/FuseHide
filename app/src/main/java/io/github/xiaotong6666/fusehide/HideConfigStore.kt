@@ -49,7 +49,7 @@ object HideConfigStore {
     const val EXTRA_REPLY_ACTION: String = "reply_action"
     private const val PREFS_NAME = "hide_config"
     private const val SNAPSHOT_PREFS_NAME = "hide_config_snapshot"
-    private const val SNAPSHOT_VERSION = 1
+    private const val SNAPSHOT_VERSION = 2
     private const val METHOD_GET_HIDE_CONFIG = "get_hide_config"
     private const val AUTHORITY = "io.github.xiaotong6666.fusehide.hideconfig"
     private const val KEY_ENABLE_HIDE_ALL_ROOT_ENTRIES = "enable_hide_all_root_entries"
@@ -57,6 +57,8 @@ object HideConfigStore {
     private const val KEY_HIDDEN_ROOT_ENTRY_NAMES = "hidden_root_entry_names"
     private const val KEY_HIDDEN_RELATIVE_PATHS = "hidden_relative_paths"
     private const val KEY_HIDDEN_PACKAGES = "hidden_packages"
+    private const val KEY_REDIRECT_RULES = "redirect_rules"
+    private const val KEY_READONLY_RULES = "readonly_rules"
     private const val KEY_RELOAD_TOKEN = "reload_token"
     private const val KEY_SNAPSHOT_VERSION = "snapshot_version"
     private const val REQUEST_TIMEOUT_MS = 3000L
@@ -113,6 +115,12 @@ object HideConfigStore {
                     encodeList(defaults.hiddenPackages),
                 ),
             ),
+            redirectRules = parseStoredList(
+                prefs.getString(KEY_REDIRECT_RULES, "")
+            ),
+            readOnlyRules = parseStoredList(
+                prefs.getString(KEY_READONLY_RULES, "")
+            )
         )
     }
 
@@ -131,6 +139,8 @@ object HideConfigStore {
             .putString(KEY_HIDDEN_ROOT_ENTRY_NAMES, encodeList(config.hiddenRootEntryNames))
             .putString(KEY_HIDDEN_RELATIVE_PATHS, encodeList(config.hiddenRelativePaths))
             .putString(KEY_HIDDEN_PACKAGES, encodeList(config.hiddenPackages))
+            .putString(KEY_REDIRECT_RULES, encodeList(config.redirectRules))
+            .putString(KEY_READONLY_RULES, encodeList(config.readOnlyRules))
             .putString(KEY_RELOAD_TOKEN, reloadToken)
             .apply()
     }
@@ -148,6 +158,8 @@ object HideConfigStore {
             .putString(KEY_HIDDEN_ROOT_ENTRY_NAMES, encodeList(config.hiddenRootEntryNames))
             .putString(KEY_HIDDEN_RELATIVE_PATHS, encodeList(config.hiddenRelativePaths))
             .putString(KEY_HIDDEN_PACKAGES, encodeList(config.hiddenPackages))
+            .putString(KEY_REDIRECT_RULES, encodeList(config.redirectRules))
+            .putString(KEY_READONLY_RULES, encodeList(config.readOnlyRules))
             .putString(KEY_RELOAD_TOKEN, reloadToken)
             .putInt(KEY_SNAPSHOT_VERSION, SNAPSHOT_VERSION)
             .commit()
@@ -192,6 +204,12 @@ object HideConfigStore {
                         encodeList(defaults.hiddenPackages),
                     ),
                 ),
+                redirectRules = parseStoredList(
+                    prefs.getString(KEY_REDIRECT_RULES, "")
+                ),
+                readOnlyRules = parseStoredList(
+                    prefs.getString(KEY_READONLY_RULES, "")
+                )
             ),
         ).apply {
             putString(KEY_RELOAD_TOKEN, prefs.getString(KEY_RELOAD_TOKEN, null))
@@ -208,6 +226,8 @@ object HideConfigStore {
         putStringArray(KEY_HIDDEN_ROOT_ENTRY_NAMES, config.hiddenRootEntryNames.toTypedArray())
         putStringArray(KEY_HIDDEN_RELATIVE_PATHS, config.hiddenRelativePaths.toTypedArray())
         putStringArray(KEY_HIDDEN_PACKAGES, config.hiddenPackages.toTypedArray())
+        putStringArray(KEY_REDIRECT_RULES, config.redirectRules.toTypedArray())
+        putStringArray(KEY_READONLY_RULES, config.readOnlyRules.toTypedArray())
     }
 
     @JvmStatic
@@ -220,6 +240,8 @@ object HideConfigStore {
             hiddenRootEntryNames = bundle.getStringArray(KEY_HIDDEN_ROOT_ENTRY_NAMES)?.toList().orEmpty(),
             hiddenRelativePaths = bundle.getStringArray(KEY_HIDDEN_RELATIVE_PATHS)?.toList().orEmpty(),
             hiddenPackages = bundle.getStringArray(KEY_HIDDEN_PACKAGES)?.toList().orEmpty(),
+            redirectRules = bundle.getStringArray(KEY_REDIRECT_RULES)?.toList().orEmpty(),
+            readOnlyRules = bundle.getStringArray(KEY_READONLY_RULES)?.toList().orEmpty()
         )
     }
 
@@ -247,6 +269,8 @@ object HideConfigStore {
                 config.hiddenRootEntryNames.toTypedArray(),
                 config.hiddenRelativePaths.toTypedArray(),
                 config.hiddenPackages.toTypedArray(),
+                config.redirectRules.toTypedArray(),
+                config.readOnlyRules.toTypedArray()
             )
             true
         } catch (t: Throwable) {

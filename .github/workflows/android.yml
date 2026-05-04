@@ -80,13 +80,10 @@ jobs:
       run: |
         VERSION_CODE=$(git rev-list --count HEAD)
         VERSION_NAME="1.${VERSION_CODE}"
-        COMMUNITY_TAG="${VERSION_CODE}-${VERSION_NAME}"
         echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
         echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
-        echo "COMMUNITY_TAG=$COMMUNITY_TAG" >> $GITHUB_ENV
         echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
         echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
-        echo "community_tag=$COMMUNITY_TAG" >> $GITHUB_OUTPUT
 
     - name: Rename APKs
       run: |
@@ -124,6 +121,7 @@ jobs:
         overwrite: true
         files: |
           app/build/outputs/apk/debug/FuseHide_Debug_v*.apk
+<<<<<<< HEAD
           app/build/outputs/apk/release/FuseHide_v*.apk
 
     - name: Sync community release
@@ -168,3 +166,6 @@ jobs:
         gh release upload "$COMMUNITY_TAG" "$RELEASE_APK" \
           --repo "$TARGET_REPO" \
           --clobber
+=======
+          app/build/outputs/apk/release/FuseHide_v*.apk
+>>>>>>> 434ff0b (支持重定向)

@@ -22,6 +22,8 @@ data class HideConfig(
     val hiddenRootEntryNames: List<String>,
     val hiddenRelativePaths: List<String>,
     val hiddenPackages: List<String>,
+    val redirectRules: List<String> = emptyList(),
+    val readOnlyRules: List<String> = emptyList()
 )
 
 object HideConfigDefaults {
@@ -33,6 +35,8 @@ object HideConfigDefaults {
             hiddenRootEntryNames = HideConfigNativeBridge.getDefaultHiddenRootEntryNames().toList(),
             hiddenRelativePaths = HideConfigNativeBridge.getDefaultHiddenRelativePaths().toList(),
             hiddenPackages = HideConfigNativeBridge.getDefaultHiddenPackages().toList(),
+            redirectRules = emptyList(),
+            readOnlyRules = emptyList()
         )
     }
 
