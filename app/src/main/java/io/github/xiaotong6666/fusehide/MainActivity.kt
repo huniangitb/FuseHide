@@ -898,6 +898,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        val enableIntent = Intent("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED")
+        enableIntent.putExtra("enabled", false)
+        listOf(
+            "com.google.android.providers.media.module",
+            "com.android.providers.media.module",
+        ).forEach { pkg ->
+            enableIntent.setPackage(pkg)
+            sendBroadcast(enableIntent)
+        }
         unregisterReceiver(statusReceiver)
         unregisterReceiver(configStatusReceiver)
         unregisterReceiver(appliedConfigReceiver)
@@ -975,16 +984,28 @@ private fun fuseHideHomeScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
 
     LaunchedEffect(isMonitoring) {
-        while (isMonitoring) {
-            val fetchIntent = Intent("io.github.xiaotong6666.fusehide.FETCH_EVENTS")
-            listOf(
-                "com.google.android.providers.media.module",
-                "com.android.providers.media.module",
-            ).forEach { pkg ->
-                fetchIntent.setPackage(pkg)
-                context.sendBroadcast(fetchIntent)
+        val enableIntent = Intent("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED")
+        enableIntent.putExtra("enabled", isMonitoring)
+        listOf(
+            "com.google.android.providers.media.module",
+            "com.android.providers.media.module",
+        ).forEach { pkg ->
+            enableIntent.setPackage(pkg)
+            context.sendBroadcast(enableIntent)
+        }
+
+        if (isMonitoring) {
+            while (true) {
+                val fetchIntent = Intent("io.github.xiaotong6666.fusehide.FETCH_EVENTS")
+                listOf(
+                    "com.google.android.providers.media.module",
+                    "com.android.providers.media.module",
+                ).forEach { pkg ->
+                    fetchIntent.setPackage(pkg)
+                    context.sendBroadcast(fetchIntent)
+                }
+                delay(1000)
             }
-            delay(1000)
         }
     }
 

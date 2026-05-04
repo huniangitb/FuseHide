@@ -263,16 +263,24 @@ public class Entry implements IXposedHookLoadPackage {
             BroadcastReceiver monitorReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    String[] events = HideConfigNativeBridge.fetchMonitorEvents();
-                    if (events != null && events.length > 0) {
-                        Intent reply = new Intent("io.github.xiaotong6666.fusehide.REPORT_EVENTS")
-                                .setPackage(APP_PACKAGE)
-                                .putExtra("events", events);
-                        application.sendBroadcast(reply);
+                    String action = intent.getAction();
+                    if ("io.github.xiaotong6666.fusehide.FETCH_EVENTS".equals(action)) {
+                        String[] events = HideConfigNativeBridge.fetchMonitorEvents();
+                        if (events != null && events.length > 0) {
+                            Intent reply = new Intent("io.github.xiaotong6666.fusehide.REPORT_EVENTS")
+                                    .setPackage(APP_PACKAGE)
+                                    .putExtra("events", events);
+                            application.sendBroadcast(reply);
+                        }
+                    } else if ("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED".equals(action)) {
+                        boolean enabled = intent.getBooleanExtra("enabled", false);
+                        HideConfigNativeBridge.setMonitorEnabled(enabled);
                     }
                 }
             };
-            IntentFilter monitorFilter = new IntentFilter("io.github.xiaotong6666.fusehide.FETCH_EVENTS");
+            IntentFilter monitorFilter = new IntentFilter();
+            monitorFilter.addAction("io.github.xiaotong6666.fusehide.FETCH_EVENTS");
+            monitorFilter.addAction("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED");
             if (Build.VERSION.SDK_INT >= 33) {
                 application.registerReceiver(monitorReceiver, monitorFilter, Context.RECEIVER_EXPORTED);
             } else {
