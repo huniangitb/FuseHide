@@ -1,4 +1,3 @@
-===== File: cpp/fusehide/fuse_wrappers.cpp =====
 // Copyright (C) 2026 XiaoTong6666
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -254,7 +253,7 @@ void WrappedAddDirectoryEntriesFromLowerFs(DIR* dirp, LowerFsDirentFilterFn filt
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1954
 extern "C" void WrappedPfReaddirPostfilter(fuse_req_t req, uint64_t ino, uint32_t error_in,
                                            off_t off_in, off_t off_out, size_t size_out,
-                                           const void* dirents_in, void* fi) {
+                                           const void* dirents_in, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, uint32_t, off_t, off_t, size_t,
@@ -340,7 +339,7 @@ extern "C" void WrappedPfOpen(fuse_req_t req, uint64_t ino, fuse_file_info* fi) 
     }
 }
 
-extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, void* fi) {
+extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, void*)>(gOriginalPfOpendir);
     if (fn) {
@@ -561,7 +560,7 @@ extern "C" void WrappedPfCreate(fuse_req_t req, uint64_t parent, const char* nam
 // readdirplus enabled, but this hook is still useful as a fallback for alternative FUSE configs.
 // AOSP reference: jni/FuseDaemon.cpp#1944
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1944
-extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_t off, void* fi) {
+extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_t off, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     auto fn =
@@ -587,7 +586,7 @@ extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_
 }
 
 extern "C" void WrappedDoReaddirCommon(fuse_req_t req, uint64_t ino, size_t size, off_t off,
-                                       void* fi, bool plus) {
+                                       fuse_file_info* fi, bool plus) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, size_t, off_t, void*, bool)>(
@@ -613,7 +612,7 @@ extern "C" void WrappedDoReaddirCommon(fuse_req_t req, uint64_t ino, size_t size
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1904
 // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#2000
 extern "C" void WrappedPfReaddirplus(fuse_req_t req, uint64_t ino, size_t size, off_t off,
-                                     void* fi) {
+                                     fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, size_t, off_t, void*)>(
