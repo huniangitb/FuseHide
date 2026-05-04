@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">FuseHide</string>
-    <string name="home_subtitle_policy">调整运行时配置，并验证 MediaProvider 的实际使用情况。</string>
+    <string name="home_subtitle_policy">调整运行时隐藏配置，并验证 MediaProvider 的实际使用情况。</string>
     <string name="home_subtitle_probe">针对被 Hook 的 MediaProvider 进程运行直接路径检测。</string>
     <string name="home_subtitle_monitor">FUSE 动作实时监控 (Open/Create/Delete)。</string>
     <string name="tab_policy">配置</string>
@@ -13,7 +13,7 @@
     <string name="monitor_search">搜索日志 (应用名, 路径, 操作)...</string>
 
     <string name="section_runtime_policy">运行时配置</string>
-    <string name="section_runtime_policy_desc">编辑应用保存的配置，并将其推送到被 Hook 的 MediaProvider 进程中。</string>
+    <string name="section_runtime_policy_desc">编辑应用保存的隐藏配置，并将其推送到被 Hook 的 MediaProvider 进程中。</string>
     <string name="section_editable_draft">编辑配置</string>
     <string name="section_editable_draft_desc">这些字段是您的本地未保存的配置。“保存”将其存入本地；“应用”将其推送到 MediaProvider。</string>
     <string name="section_apply_feedback">应用反馈</string>
@@ -81,9 +81,9 @@
     <string name="field_hidden_package_names">隐藏的包名</string>
     <string name="field_hidden_package_names_help">每行一个包名。</string>
     <string name="field_redirect_rules">重定向规则</string>
-    <string name="field_redirect_rules_help">格式: 包名|匹配路径|目标路径 (*代表全局)。例如: *|/storage/emulated/0/DCIM|/storage/emulated/0/Hide</string>
+    <string name="field_redirect_rules_help">格式：包名|原路径|目标路径 (例如：com.example.app|/sdcard/old/*|/sdcard/new/)</string>
     <string name="field_readonly_rules">只读规则</string>
-    <string name="field_readonly_rules_help">格式: 包名|匹配路径 (*代表全局)。例如: *|/storage/emulated/0/Android/data/*</string>
+    <string name="field_readonly_rules_help">格式：包名|路径匹配模式 (例如：com.example.app|/sdcard/secrets/*)</string>
     <string name="field_primary_path_help">供 stat、access、list、open、create、mkdir 和 unlink 使用。</string>
     <string name="field_secondary_path_help">仅供重命名/移动使用。</string>
     <string name="status_checking">模块状态：正在检查...</string>

@@ -81,9 +81,9 @@
     <string name="field_hidden_package_names">Hidden package names</string>
     <string name="field_hidden_package_names_help">One package name per line.</string>
     <string name="field_redirect_rules">Redirect Rules</string>
-    <string name="field_redirect_rules_help">Format: pkg|pattern|target (use * for global). E.g., *|/storage/emulated/0/DCIM|/storage/emulated/0/Hide</string>
+    <string name="field_redirect_rules_help">Format: packageName|pattern|target (e.g. com.example.app|/sdcard/old/*|/sdcard/new/)</string>
     <string name="field_readonly_rules">Read-Only Rules</string>
-    <string name="field_readonly_rules_help">Format: pkg|pattern (use * for global). E.g., *|/storage/emulated/0/Android/data/*</string>
+    <string name="field_readonly_rules_help">Format: packageName|pattern (e.g. com.example.app|/sdcard/secrets/*)</string>
     <string name="field_primary_path_help">Used by Stat, Access, List, Open, Create, Mkdir, and Unlink.</string>
     <string name="field_secondary_path_help">Used only by Rename/Move.</string>
     <string name="status_checking">Module status: checking...</string>

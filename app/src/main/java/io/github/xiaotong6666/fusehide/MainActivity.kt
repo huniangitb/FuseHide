@@ -407,10 +407,7 @@ class MainActivity : ComponentActivity() {
                     isMonitoring = isMonitoring,
                     monitorEvents = monitorEvents,
                     getAppName = ::getAppName,
-                    onMonitoringToggle = { 
-                        isMonitoring = it
-                        HideConfigNativeBridge.setMonitorEnabled(it)
-                    },
+                    onMonitoringToggle = { isMonitoring = it },
                     onMonitorClear = { 
                         monitorEvents.clear()
                         MonitorLogger.clear()
@@ -1416,7 +1413,6 @@ private fun configScreen(
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
-
             Spacer(Modifier.height(10.dp))
             TextField(
                 value = redirectRulesText,
@@ -1436,7 +1432,6 @@ private fun configScreen(
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
-
             Spacer(Modifier.height(10.dp))
             TextField(
                 value = readOnlyRulesText,
@@ -1456,7 +1451,7 @@ private fun configScreen(
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
-            
+
             Spacer(Modifier.height(14.dp))
             dualActionRow(
                 primaryLabel = stringResource(R.string.button_apply),

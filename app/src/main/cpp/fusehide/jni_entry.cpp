@@ -57,6 +57,19 @@ jobjectArray VectorToJavaStringArray(JNIEnv* env, const std::vector<std::string>
     return array;
 }
 
+jobjectArray PathRulesToJavaStringArray(JNIEnv* env, const std::vector<fusehide::PathRule>& rules, bool isRedirect) {
+    std::vector<std::string> strings;
+    strings.reserve(rules.size());
+    for (const auto& r : rules) {
+        if (isRedirect) {
+            strings.push_back(r.packageName + "|" + r.pattern + "|" + r.target);
+        } else {
+            strings.push_back(r.packageName + "|" + r.pattern);
+        }
+    }
+    return VectorToJavaStringArray(env, strings);
+}
+
 std::vector<fusehide::PathRule> ParseRules(const std::vector<std::string>& list, bool isRedirect) {
     std::vector<fusehide::PathRule> result;
     for (const auto& line : list) {
@@ -119,6 +132,17 @@ Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getDefaultHiddenPack
     return VectorToJavaStringArray(env, fusehide::DefaultHideConfig().hiddenPackages);
 }
 
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getDefaultRedirectRules(JNIEnv* env, jclass) {
+    return PathRulesToJavaStringArray(env, fusehide::DefaultHideConfig().redirectRules, true);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getDefaultReadOnlyRules(JNIEnv* env, jclass) {
+    return PathRulesToJavaStringArray(env, fusehide::DefaultHideConfig().readOnlyRules, false);
+}
+
+
 JNIEXPORT jboolean JNICALL
 Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getCurrentEnableHideAllRootEntries(
     JNIEnv*, jclass) {
@@ -150,6 +174,17 @@ Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getCurrentHiddenPack
     return VectorToJavaStringArray(env, fusehide::CurrentHideConfig()->hiddenPackages);
 }
 
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getCurrentRedirectRules(JNIEnv* env, jclass) {
+    return PathRulesToJavaStringArray(env, fusehide::CurrentHideConfig()->redirectRules, true);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_getCurrentReadOnlyRules(JNIEnv* env, jclass) {
+    return PathRulesToJavaStringArray(env, fusehide::CurrentHideConfig()->readOnlyRules, false);
+}
+
+
 JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_applyHideConfig(
     JNIEnv* env, jclass, jboolean enableHideAllRootEntries,
     jobjectArray hideAllRootEntriesExemptions, jobjectArray hiddenRootEntryNames,
@@ -179,7 +214,7 @@ Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_fetchMonitorEvents(J
 
 JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_setMonitorEnabled(
     JNIEnv*, jclass, jboolean enabled) {
-    gMonitorEnabled.store(enabled == JNI_TRUE, std::memory_order_release);
+    fusehide::gMonitorEnabled.store(enabled == JNI_TRUE, std::memory_order_release);
 }
 
 JNIEXPORT jint JNICALL Java_io_github_xiaotong6666_fusehide_Utils_rmdir(JNIEnv* env, jclass clazz,

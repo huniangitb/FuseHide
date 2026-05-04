@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package io.github.xiaotong6666.fusehide;
 
 import android.app.AndroidAppHelper;
@@ -66,8 +67,8 @@ public class Entry implements IXposedHookLoadPackage {
                 java.util.Arrays.asList(HideConfigNativeBridge.getCurrentHiddenRootEntryNames()),
                 java.util.Arrays.asList(HideConfigNativeBridge.getCurrentHiddenRelativePaths()),
                 java.util.Arrays.asList(HideConfigNativeBridge.getCurrentHiddenPackages()),
-                java.util.Collections.emptyList(),  // redirectRules
-                java.util.Collections.emptyList()   // readOnlyRules
+                java.util.Arrays.asList(HideConfigNativeBridge.getCurrentRedirectRules()),
+                java.util.Arrays.asList(HideConfigNativeBridge.getCurrentReadOnlyRules())
         );
     }
 
