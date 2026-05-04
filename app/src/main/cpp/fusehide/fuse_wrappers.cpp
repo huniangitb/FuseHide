@@ -130,9 +130,36 @@ void InvalidateFilteredParentChildren(std::string_view parentPath,
 
 }  // namespace
 
+// --- 路径重定向辅助函数 (移动到此处以解决编译依赖) ---
+std::string NormalizeLowerPathToFuse(const std::string& path) {
+    if (path.starts_with("/data/media/0")) return "/storage/emulated/0" + path.substr(13);
+    if (path.starts_with("/mnt/pass_through/0/emulated/0")) return "/storage/emulated/0" + path.substr(30);
+    return path;
+}
+
+std::string NormalizeFuseToLowerPath(const std::string& path, const std::string& originalLower) {
+    if (path.starts_with("/storage/emulated/0")) {
+        if (originalLower.starts_with("/data/media/0")) return "/data/media/0" + path.substr(19);
+        if (originalLower.starts_with("/mnt/pass_through/0/emulated/0")) return "/mnt/pass_through/0/emulated/0" + path.substr(19);
+    }
+    return path;
+}
+
+std::string ProcessRedirectPath(const char* path, uint32_t uid) {
+    if (!path || uid == 0) return path ? path : "";
+    std::string lowerPath = path;
+    std::string fusePath = NormalizeLowerPathToFuse(lowerPath);
+    std::string targetFuse = HiddenPathPolicy::GetRedirectTarget(uid, fusePath);
+    if (!targetFuse.empty() && targetFuse != fusePath) {
+        std::string res = NormalizeFuseToLowerPath(targetFuse, lowerPath);
+        DebugLogPrint(4, "redirect applied: uid=%u %s -> %s", uid, path, res.c_str());
+        return res;
+    }
+    return lowerPath;
+}
+// ----------------------------------------------------
+
 // pf_lookup is the earliest reliable place to learn the real root parent inode on this device.
-// AOSP reference: jni/FuseDaemon.cpp#851
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#851
 extern "C" void WrappedPfLookup(fuse_req_t req, uint64_t parent, const char* name) {
     RuntimeState::RememberFuseSession(req);
     uint32_t uid = RuntimeState::ReqUid(req);
@@ -163,11 +190,6 @@ extern "C" void WrappedPfLookup(fuse_req_t req, uint64_t parent, const char* nam
     gTrackRootHiddenLookup = false;
 }
 
-// MediaProviderWrapper::GetDirectoryEntries() appends lower-fs directory names after the Java-side
-// list is fetched, so root entry hiding must also filter the native vector here.
-// AOSP references: jni/MediaProviderWrapper.cpp#373 and jni/FuseDaemon.cpp#1882
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/MediaProviderWrapper.cpp#373
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1882
 DirectoryEntries FilterHiddenDirectoryEntries(uint32_t uid, std::string_view parentPath,
                                               DirectoryEntries entries) {
     if (!HiddenPathPolicy::IsTestHiddenUid(uid) || entries.empty()) {
@@ -249,11 +271,6 @@ void WrappedAddDirectoryEntriesFromLowerFs(DIR* dirp, LowerFsDirentFilterFn filt
     }
 }
 
-// AOSP readdir postfilter stats each child path before copying the surviving dirents into a
-// fuse_read_out buffer. This context flag lets WrappedReplyBuf preserve that wire layout when the
-// device actually goes through pf_readdir_postfilter.
-// AOSP reference: jni/FuseDaemon.cpp#1954
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1954
 extern "C" void WrappedPfReaddirPostfilter(fuse_req_t req, uint64_t ino, uint32_t error_in,
                                            off_t off_in, off_t off_out, size_t size_out,
                                            const void* dirents_in, fuse_file_info* fi) {
@@ -282,10 +299,6 @@ extern "C" void WrappedPfReaddirPostfilter(fuse_req_t req, uint64_t ino, uint32_
     gInPfReaddirPostfilter = false;
 }
 
-// pf_lookup_postfilter is the AOSP path-specific ENOENT gate that runs after lookup success but
-// before the positive entry reaches the kernel.
-// AOSP reference: jni/FuseDaemon.cpp#921
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#921
 extern "C" void WrappedPfLookupPostfilter(fuse_req_t req, uint64_t parent, uint32_t error_in,
                                           const char* name, struct fuse_entry_out* feo,
                                           struct fuse_entry_bpf_out* febo) {
@@ -359,9 +372,6 @@ extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, fuse_file_info* f
     }
 }
 
-// AOSP pf_mkdir only checks parent_path accessibility before it calls mkdir(child_path), so a
-// hidden leaf name would still leak existence semantics unless we stop it here.
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1184
 extern "C" void WrappedPfMkdir(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode) {
     RecordMonitorEvent(req, "CREATE", parent, name);
     RuntimeState::RememberFuseSession(req);
@@ -394,9 +404,6 @@ extern "C" void WrappedPfMkdir(fuse_req_t req, uint64_t parent, const char* name
     }
 }
 
-// Some callers create regular files through the mknod op instead of create. AOSP still uses only
-// parent_path policy here, so hidden leaf names must be blocked explicitly.
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1134
 extern "C" void WrappedPfMknod(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode,
                                uint64_t rdev) {
     RecordMonitorEvent(req, "CREATE", parent, name);
@@ -431,9 +438,6 @@ extern "C" void WrappedPfMknod(fuse_req_t req, uint64_t parent, const char* name
     }
 }
 
-// AOSP pf_unlink only gates on parent_path before it deletes the final child path, so hidden leaf
-// names must return ENOENT here instead of reaching the lower filesystem.
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1218
 extern "C" void WrappedPfUnlink(fuse_req_t req, uint64_t parent, const char* name) {
     RecordMonitorEvent(req, "DELETE", parent, name);
     RuntimeState::RememberFuseSession(req);
@@ -459,9 +463,6 @@ extern "C" void WrappedPfUnlink(fuse_req_t req, uint64_t parent, const char* nam
     }
 }
 
-// AOSP pf_rmdir follows the same parent-only validation pattern as pf_unlink, so hidden child
-// names must be rejected before the real directory delete runs.
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1248
 extern "C" void WrappedPfRmdir(fuse_req_t req, uint64_t parent, const char* name) {
     RecordMonitorEvent(req, "DELETE", parent, name);
     RuntimeState::RememberFuseSession(req);
@@ -487,10 +488,6 @@ extern "C" void WrappedPfRmdir(fuse_req_t req, uint64_t parent, const char* name
     }
 }
 
-// AOSP do_rename only validates the old and new parent directories before it passes the final
-// child paths into MediaProviderWrapper::Rename, so hidden names must be intercepted here as well.
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1299
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1369
 extern "C" void WrappedPfRename(fuse_req_t req, uint64_t parent, const char* name,
                                 uint64_t new_parent, const char* new_name, uint32_t flags) {
     RuntimeState::RememberFuseSession(req);
@@ -535,9 +532,6 @@ extern "C" void WrappedPfRename(fuse_req_t req, uint64_t parent, const char* nam
     }
 }
 
-// AOSP pf_create inserts into MediaProvider and then opens the lower-fs child path. Returning a
-// positive entry here would let create leak EEXIST-like behavior for the hidden root entry.
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#2121
 extern "C" void WrappedPfCreate(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode,
                                 fuse_file_info* fi) {
     RecordMonitorEvent(req, "CREATE", parent, name);
@@ -571,10 +565,6 @@ extern "C" void WrappedPfCreate(fuse_req_t req, uint64_t parent, const char* nam
     }
 }
 
-// Plain readdir delegates to do_readdir_common(..., plus=false). Most modern devices keep
-// readdirplus enabled, but this hook is still useful as a fallback for alternative FUSE configs.
-// AOSP reference: jni/FuseDaemon.cpp#1944
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1944
 extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_t off, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
@@ -627,11 +617,6 @@ extern "C" void WrappedDoReaddirCommon(fuse_req_t req, uint64_t ino, size_t size
     gCurrentReaddirReqUnique = 0;
 }
 
-// readdirplus is the common enumeration path on recent Android builds because do_readdir_common()
-// emits fuse_direntplus records by first running do_lookup() for each directory entry.
-// AOSP references: jni/FuseDaemon.cpp#1904 and #2000
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1904
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#2000
 extern "C" void WrappedPfReaddirplus(fuse_req_t req, uint64_t ino, size_t size, off_t off,
                                      fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
@@ -674,21 +659,11 @@ extern "C" int WrappedNotifyInvalEntry(void* se, uint64_t parent, const char* na
 extern "C" int WrappedNotifyInvalInode(void* se, uint64_t ino, off_t off, off_t len) {
     auto fn = reinterpret_cast<int (*)(void*, uint64_t, off_t, off_t)>(gOriginalNotifyInvalInode);
     int ret = fn ? fn(se, ino, off, len) : -1;
-    // Device libfuse_jni routes a fallback invalidation path through notify_inval_inode().
-    // The callback receives an inode handle, not a verified node object, so only log the rawvalue
-    // here.
     DebugLogPrint(3, "notify_inval_inode: ino=0x%lx name=%s ret=%d", (unsigned long)ino,
                   ino == 1 ? "(ROOT)" : "", ret);
     return ret;
 }
 
-// This is the strongest uid-specific hiding point. Once a positive fuse_entry_param escapes here,
-// later operations such as getattr, getxattr, or create can still observe existence through the
-// resolved inode even if later path-based checks return false.
-// AOSP references: jni/FuseDaemon.cpp#912, #1166, and #1211
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#912
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1166
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1211
 extern "C" int WrappedReplyEntry(fuse_req_t req, const struct fuse_entry_param* e) {
     auto fn =
         reinterpret_cast<int (*)(fuse_req_t, const struct fuse_entry_param*)>(gOriginalReplyEntry);
@@ -743,14 +718,6 @@ extern "C" int WrappedReplyEntry(fuse_req_t req, const struct fuse_entry_param* 
             RuntimeState::ScheduleHiddenInodeInvalidation(e->ino);
         }
     }
-    // The device build sometimes delivers directory data through reply_buf without ever hitting our
-    // readdir-family wrappers, but lookup success for the visible parent still flows through
-    // fuse_reply_entry. Record the parent path here so reply_buf can later reconstruct an exact
-    // parentPath + childName match for nested hidden targets.
-    // AOSP references: jni/FuseDaemon.cpp#889, #912, and #1909
-    // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#889
-    // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#912
-    // https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1909
     if (e != nullptr && gCurrentLookupParentInode != 0 && !gCurrentLookupName.empty()) {
         std::optional<std::string> childPath;
         if (const auto parentPath = LookupTrackedPathForInode(gCurrentLookupParentInode);
@@ -811,11 +778,6 @@ extern "C" int WrappedReplyEntry(fuse_req_t req, const struct fuse_entry_param* 
     return ret;
 }
 
-// get_entry_timeout() only controls dentry caching; pf_getattr still replies with a separate
-// attr timeout. Force both to zero when the request touches the hidden subtree.
-// AOSP references: jni/FuseDaemon.cpp#510 and #1002
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#510
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1002
 extern "C" int WrappedReplyAttr(fuse_req_t req, const struct stat* attr, double timeout) {
     auto fn = reinterpret_cast<int (*)(fuse_req_t, const struct stat*, double)>(gOriginalReplyAttr);
     const double replyTimeout = gZeroAttrCacheForCurrentGetattr ? 0.0 : timeout;
@@ -825,13 +787,6 @@ extern "C" int WrappedReplyAttr(fuse_req_t req, const struct stat* attr, double 
     return fn ? fn(req, attr, replyTimeout) : -1;
 }
 
-// reply_buf is the last universal filtering point. AOSP emits directory data through plain readdir,
-// readdir postfilter, readdirplus, and lookup_postfilter using different wire layouts, so auto-
-// detecting dirent and direntplus records here is more reliable than betting on one upstream path.
-// AOSP references: jni/FuseDaemon.cpp#946, #1941, and #1997
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#946
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1941
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1997
 extern "C" int WrappedReplyBuf(fuse_req_t req, const char* buf, size_t size) {
     auto fn = reinterpret_cast<int (*)(fuse_req_t, const char*, size_t)>(gOriginalReplyBuf);
     const char* replyBuf = buf;
@@ -865,9 +820,6 @@ extern "C" int WrappedReplyBuf(fuse_req_t req, const char* buf, size_t size) {
     const std::optional<std::string> fallbackParentPath =
         filterIno == 0 ? LookupRecentHiddenParentPath(requestFilterUid, &fallbackHiddenUid)
                        : std::nullopt;
-    // Some device reply_buf paths lose the caller uid entirely, but we must not reuse the last
-    // hidden uid for an explicit non-hidden app. Only borrow fallback uid when the request uid is
-    // absent (0); otherwise recent parent state would bleed into unrelated apps.
     const bool canBorrowFallbackUid =
         requestFilterUid == 0 && HiddenPathPolicy::IsTestHiddenUid(fallbackHiddenUid);
     const uint32_t filterUid = HiddenPathPolicy::IsTestHiddenUid(requestFilterUid)
@@ -929,10 +881,6 @@ extern "C" int WrappedReplyBuf(fuse_req_t req, const char* buf, size_t size) {
             }
         }
 
-        // When the active device path bypasses our readdir wrappers, reply_buf still sees the final
-        // dirent payload but loses the parent inode/path context. Fall back to the last visible
-        // parent path learned from fuse_reply_entry so nested targets like Download/Download can be
-        // filtered by exact path instead of by name alone.
         if (filterMode == nullptr) {
             if (fallbackParentPath.has_value() &&
                 BuildFilteredDirentplusPayloadForParentPath(buf, size, filterUid,
@@ -1065,13 +1013,6 @@ extern "C" void WrappedPfGetattr(fuse_req_t req, uint64_t ino, fuse_file_info* f
     }
 }
 
-// lstat is the path-based source of truth used by pf_getattr and by some enumeration paths. This is
-// where we convert a visible subtree path back into cache invalidation state.
-// lstat is the path-based source of truth for pf_getattr and is also consulted by readdir
-// postfilter. Recording the root parent inode here avoids assuming a fixed root inode value.
-// AOSP references: jni/FuseDaemon.cpp#1002 and #1985
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1002
-// https://android.googlesource.com/platform/packages/providers/MediaProvider/+/refs/heads/android14-release/jni/FuseDaemon.cpp#1985
 extern "C" int WrappedLstat(const char* path, struct stat* st) {
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     if (gInPfGetattr && gPfGetattrIno != 0 &&
@@ -1111,9 +1052,6 @@ extern "C" int WrappedLstat(const char* path, struct stat* st) {
             RememberTrackedPathForInode(gPfGetattrIno, pathView);
             if (HiddenPathPolicy::IsTestHiddenUid(gPfGetattrUid) &&
                 IsParentOfExactHiddenTargetPath(pathView)) {
-                // Some device builds enumerate the parent directory after only touching it through
-                // pf_getattr/lstat, without a visible parent lookup that would reach reply_entry.
-                // Seed the fallback parent path here so reply_buf can still filter nested children.
                 RememberRecentHiddenParentPath(gPfGetattrUid, pathView);
                 DebugLogPrint(4, "remember recent hidden parent from getattr uid=%u path=%s",
                               static_cast<unsigned>(gPfGetattrUid), DebugPreview(pathView).c_str());
@@ -1194,35 +1132,6 @@ extern "C" ssize_t WrappedLgetxattr(const char* path, const char* name, void* va
     return -1;
 }
 
-std::string NormalizeLowerPathToFuse(const std::string& path) {
-    if (path.starts_with("/data/media/0")) return "/storage/emulated/0" + path.substr(13);
-    if (path.starts_with("/mnt/pass_through/0/emulated/0")) return "/storage/emulated/0" + path.substr(30);
-    return path;
-}
-
-std::string NormalizeFuseToLowerPath(const std::string& path, const std::string& originalLower) {
-    if (path.starts_with("/storage/emulated/0")) {
-        if (originalLower.starts_with("/data/media/0")) return "/data/media/0" + path.substr(19);
-        if (originalLower.starts_with("/mnt/pass_through/0/emulated/0")) return "/mnt/pass_through/0/emulated/0" + path.substr(19);
-    }
-    return path;
-}
-
-std::string ProcessRedirectPath(const char* path, uint32_t uid) {
-    if (!path || uid == 0) return path ? path : "";
-    std::string lowerPath = path;
-    std::string fusePath = NormalizeLowerPathToFuse(lowerPath);
-    std::string targetFuse = HiddenPathPolicy::GetRedirectTarget(uid, fusePath);
-    if (!targetFuse.empty() && targetFuse != fusePath) {
-        std::string res = NormalizeFuseToLowerPath(targetFuse, lowerPath);
-        DebugLogPrint(4, "redirect applied: uid=%u %s -> %s", uid, path, res.c_str());
-        return res;
-    }
-    return lowerPath;
-}
-
-// Even if the named FUSE wrappers are missed on a device-specific path, lower-fs mkdir/mknod/open
-// calls still carry the final child path. These libc hooks are the last fallback for create/mkdir.
 extern "C" int WrappedMkdirLibc(const char* path, mode_t mode) {
     const uint32_t uid = gActiveUid;
     RecordMonitorEventPath(uid, "CREATE", path);
