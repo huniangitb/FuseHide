@@ -1,3 +1,4 @@
+// ===== File: app/src/main/cpp/fusehide/fuse_wrappers.cpp =====
 // Copyright (C) 2026 XiaoTong6666
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,9 +24,8 @@ extern "C" void RecordMonitorEventPath(uint32_t uid, const char* type, const cha
 namespace {
 
 thread_local uint32_t gActiveUid = 0;
-thread_local uint32_t gLastPathPolicyUid = 0;
-thread_local std::string gLastPathPolicyPath;
 
+// 使用 RAII 机制严格控制 UID 的生命周期，确保不会污染其他系统请求
 class ScopedActiveUid final {
    public:
     explicit ScopedActiveUid(uint32_t uid) : previous_(gActiveUid) {
@@ -41,14 +41,13 @@ class ScopedActiveUid final {
 };
 
 bool ShouldHideLowerFsCreatePath(std::string_view pathView) {
-    const uint32_t uid = gActiveUid != 0 ? gActiveUid : gLastPathPolicyUid;
-    return uid != 0 && HiddenPathPolicy::IsTestHiddenUid(uid) &&
+    return gActiveUid != 0 && HiddenPathPolicy::IsTestHiddenUid(gActiveUid) &&
            HiddenPathPolicy::IsExactHiddenTargetPath(pathView);
 }
 
 bool ShouldHideLowerFsPath(std::string_view pathView) {
-    const uint32_t uid = gActiveUid != 0 ? gActiveUid : gLastPathPolicyUid;
-    return uid != 0 && HiddenPathPolicy::ShouldHideTestPath(uid, pathView);
+    return gActiveUid != 0 && HiddenPathPolicy::IsTestHiddenUid(gActiveUid) &&
+           HiddenPathPolicy::ShouldHideTestPath(gActiveUid, pathView);
 }
 
 std::string ReadDirectoryPathFromDir(DIR* dirp) {
@@ -130,7 +129,7 @@ void InvalidateFilteredParentChildren(std::string_view parentPath,
 
 }  // namespace
 
-// --- 路径重定向辅助函数 (移动到此处以解决编译依赖) ---
+// --- 路径重定向辅助函数 ---
 std::string NormalizeLowerPathToFuse(const std::string& path) {
     if (path.starts_with("/data/media/0")) return "/storage/emulated/0" + path.substr(13);
     if (path.starts_with("/mnt/pass_through/0/emulated/0")) return "/storage/emulated/0" + path.substr(30);
@@ -159,7 +158,6 @@ std::string ProcessRedirectPath(const char* path, uint32_t uid) {
 }
 // ----------------------------------------------------
 
-// pf_lookup is the earliest reliable place to learn the real root parent inode on this device.
 extern "C" void WrappedPfLookup(fuse_req_t req, uint64_t parent, const char* name) {
     RuntimeState::RememberFuseSession(req);
     uint32_t uid = RuntimeState::ReqUid(req);
@@ -223,6 +221,7 @@ DirectoryEntries FilterHiddenDirectoryEntries(uint32_t uid, std::string_view par
 DirectoryEntries WrappedGetDirectoryEntries(void* wrapper, uint32_t uid, const std::string& path,
                                             DIR* dirp) {
     auto fn = reinterpret_cast<GetDirectoryEntriesFn>(gOriginalGetDirectoryEntries);
+    ScopedActiveUid scopedUid(uid); // 传递 UID 给内部下层调用
     DirectoryEntries entries = fn ? fn(wrapper, uid, path, dirp) : DirectoryEntries();
     if (gCurrentReaddirReqUnique != 0) {
         std::lock_guard<std::mutex> lock(gPendingReaddirContextsMutex);
@@ -249,15 +248,12 @@ void WrappedAddDirectoryEntriesFromLowerFs(DIR* dirp, LowerFsDirentFilterFn filt
         return;
     }
 
-    const uint32_t uid = gLastPathPolicyUid;
-    if (!HiddenPathPolicy::IsTestHiddenUid(uid)) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0 || !HiddenPathPolicy::IsTestHiddenUid(uid)) {
         return;
     }
 
     std::string parentPath = ReadDirectoryPathFromDir(dirp);
-    if (parentPath.empty()) {
-        parentPath = gLastPathPolicyPath;
-    }
     if (parentPath.empty()) {
         return;
     }
@@ -286,16 +282,12 @@ extern "C" void WrappedPfReaddirPostfilter(fuse_req_t req, uint64_t ino, uint32_
                   static_cast<long long>(off_in), static_cast<long long>(off_out), size_out);
 
     gInPfReaddirPostfilter = true;
-    gPfReaddirUid = uid;
-    gPfReaddirIno = ino;
     gCurrentReaddirReqUnique = req != nullptr ? req->unique : 0;
     {
         ScopedActiveUid scopedUid(uid);
         fn(req, ino, error_in, off_in, off_out, size_out, dirents_in, fi);
     }
     gCurrentReaddirReqUnique = 0;
-    gPfReaddirIno = 0;
-    gPfReaddirUid = 0;
     gInPfReaddirPostfilter = false;
 }
 
@@ -580,16 +572,12 @@ extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_
         gPendingReaddirContexts[req->unique] = PendingReaddirContext{uid, ino, {}};
     }
     gInPfReaddir = true;
-    gPfReaddirUid = uid;
-    gPfReaddirIno = ino;
     gCurrentReaddirReqUnique = req != nullptr ? req->unique : 0;
     {
         ScopedActiveUid scopedUid(uid);
         fn(req, ino, size, off, fi);
     }
     gCurrentReaddirReqUnique = 0;
-    gPfReaddirIno = 0;
-    gPfReaddirUid = 0;
     gInPfReaddir = false;
 }
 
@@ -633,16 +621,12 @@ extern "C" void WrappedPfReaddirplus(fuse_req_t req, uint64_t ino, size_t size, 
         gPendingReaddirContexts[req->unique] = PendingReaddirContext{uid, ino, {}};
     }
     gInPfReaddirplus = true;
-    gPfReaddirUid = uid;
-    gPfReaddirIno = ino;
     gCurrentReaddirReqUnique = req != nullptr ? req->unique : 0;
     {
         ScopedActiveUid scopedUid(uid);
         fn(req, ino, size, off, fi);
     }
     gCurrentReaddirReqUnique = 0;
-    gPfReaddirIno = 0;
-    gPfReaddirUid = 0;
     gInPfReaddirplus = false;
 }
 
@@ -805,12 +789,9 @@ extern "C" int WrappedReplyBuf(fuse_req_t req, const char* buf, size_t size) {
         }
     }
     const uint32_t reqUid = RuntimeState::ReqUid(req);
-    const uint32_t requestFilterUid =
-        gPfReaddirUid != 0
-            ? gPfReaddirUid
-            : (hasPendingContext && pendingContext.uid != 0 ? pendingContext.uid : reqUid);
-    const uint64_t filterIno =
-        gPfReaddirIno != 0 ? gPfReaddirIno : (hasPendingContext ? pendingContext.ino : 0);
+    const uint32_t requestFilterUid = gActiveUid != 0 ? gActiveUid : (hasPendingContext && pendingContext.uid != 0 ? pendingContext.uid : reqUid);
+    const uint64_t filterIno = hasPendingContext ? pendingContext.ino : 0;
+    
     const bool filterPlainReaddir = gInPfReaddir;
     const bool filterPostfilterReaddir = gInPfReaddirPostfilter;
     const bool filterReaddirplus = gInPfReaddirplus;
@@ -1002,12 +983,10 @@ extern "C" void WrappedPfGetattr(fuse_req_t req, uint64_t ino, fuse_file_info* f
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, void*)>(gOriginalPfGetattr);
     if (fn) {
         gInPfGetattr = true;
-        gPfGetattrUid = uid;
         gPfGetattrIno = ino;
         ScopedActiveUid scopedUid(uid);
         fn(req, ino, fi);
         gPfGetattrIno = 0;
-        gPfGetattrUid = 0;
         gInPfGetattr = false;
         gZeroAttrCacheForCurrentGetattr = false;
     }
@@ -1015,8 +994,8 @@ extern "C" void WrappedPfGetattr(fuse_req_t req, uint64_t ino, fuse_file_info* f
 
 extern "C" int WrappedLstat(const char* path, struct stat* st) {
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
-    if (gInPfGetattr && gPfGetattrIno != 0 &&
-        HiddenPathPolicy::IsHiddenRootDirectoryPath(pathView)) {
+
+    if (gInPfGetattr && gPfGetattrIno != 0 && HiddenPathPolicy::IsHiddenRootDirectoryPath(pathView)) {
         uint64_t expected = 0;
         const bool recorded = gHiddenRootParentInode.compare_exchange_strong(
             expected, gPfGetattrIno, std::memory_order_relaxed);
@@ -1030,31 +1009,40 @@ extern "C" int WrappedLstat(const char* path, struct stat* st) {
         }
     }
     NoteHiddenSubtreePathForCache(pathView);
-    if (gInPfGetattr && HiddenPathPolicy::IsTestHiddenUid(gPfGetattrUid)) {
-        DebugLogPrint(4, "pf_getattr lstat uid=%u path=%s", static_cast<unsigned>(gPfGetattrUid),
+
+    if (gActiveUid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, struct stat*)>(gOriginalLstat);
+        int ret = fn ? fn(path, st) : -1;
+        if (ret == 0 && gInPfGetattr && gPfGetattrIno != 0) {
+            RememberTrackedPathForInode(gPfGetattrIno, pathView);
+        }
+        return ret;
+    }
+
+    if (HiddenPathPolicy::IsTestHiddenUid(gActiveUid)) {
+        DebugLogPrint(4, "pf_getattr lstat uid=%u path=%s", static_cast<unsigned>(gActiveUid),
                       DebugPreview(pathView).c_str());
-        if (HiddenPathPolicy::ShouldHideTestPath(gPfGetattrUid, pathView)) {
-            DebugLogPrint(4, "hide test lstat uid=%u path=%s", static_cast<unsigned>(gPfGetattrUid),
+        if (HiddenPathPolicy::ShouldHideTestPath(gActiveUid, pathView)) {
+            DebugLogPrint(4, "hide test lstat uid=%u path=%s", static_cast<unsigned>(gActiveUid),
                           DebugPreview(pathView).c_str());
             errno = ENOENT;
             return -1;
         }
     }
-    
-    uint32_t uid = gActiveUid != 0 ? gActiveUid : (gInPfGetattr ? gPfGetattrUid : gLastPathPolicyUid);
-    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, gActiveUid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
-    
+
     auto fn = reinterpret_cast<int (*)(const char*, struct stat*)>(gOriginalLstat);
     if (fn) {
         const int ret = fn(targetPath, st);
         if (ret == 0 && gInPfGetattr && gPfGetattrIno != 0) {
             RememberTrackedPathForInode(gPfGetattrIno, pathView);
-            if (HiddenPathPolicy::IsTestHiddenUid(gPfGetattrUid) &&
+            if (HiddenPathPolicy::IsTestHiddenUid(gActiveUid) &&
                 IsParentOfExactHiddenTargetPath(pathView)) {
-                RememberRecentHiddenParentPath(gPfGetattrUid, pathView);
+                RememberRecentHiddenParentPath(gActiveUid, pathView);
                 DebugLogPrint(4, "remember recent hidden parent from getattr uid=%u path=%s",
-                              static_cast<unsigned>(gPfGetattrUid), DebugPreview(pathView).c_str());
+                              static_cast<unsigned>(gActiveUid), DebugPreview(pathView).c_str());
             }
             if (HiddenPathPolicy::IsAnyHiddenSubtreePath(pathView)) {
                 TrackHiddenSubtreeInode(gPfGetattrIno);
@@ -1068,18 +1056,23 @@ extern "C" int WrappedLstat(const char* path, struct stat* st) {
 
 extern "C" int WrappedStat(const char* path, struct stat* st) {
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
-    if (gInPfReaddirPostfilter && HiddenPathPolicy::IsTestHiddenUid(gPfReaddirUid) &&
+
+    if (gActiveUid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, struct stat*)>(gOriginalStat);
+        return fn ? fn(path, st) : -1;
+    }
+
+    if (gInPfReaddirPostfilter && HiddenPathPolicy::IsTestHiddenUid(gActiveUid) &&
         HiddenPathPolicy::IsAnyHiddenSubtreePath(pathView)) {
-        DebugLogPrint(4, "hide readdir stat uid=%u path=%s", static_cast<unsigned>(gPfReaddirUid),
+        DebugLogPrint(4, "hide readdir stat uid=%u path=%s", static_cast<unsigned>(gActiveUid),
                       DebugPreview(pathView).c_str());
         errno = ENOENT;
         return -1;
     }
-    
-    uint32_t uid = gActiveUid != 0 ? gActiveUid : (gPfReaddirUid != 0 ? gPfReaddirUid : gLastPathPolicyUid);
-    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, gActiveUid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
-    
+
     auto fn = reinterpret_cast<int (*)(const char*, struct stat*)>(gOriginalStat);
     if (fn) {
         return fn(targetPath, st);
@@ -1090,19 +1083,23 @@ extern "C" int WrappedStat(const char* path, struct stat* st) {
 
 extern "C" ssize_t WrappedGetxattr(const char* path, const char* name, void* value, size_t size) {
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
+    
+    if (gActiveUid == 0) {
+        auto fn = reinterpret_cast<ssize_t (*)(const char*, const char*, void*, size_t)>(gOriginalGetxattr);
+        return fn ? fn(path, name, value, size) : -1;
+    }
+
     if (ShouldHideLowerFsPath(pathView)) {
         DebugLogPrint(4, "hide getxattr path=%s name=%s", DebugPreview(pathView).c_str(),
                       name != nullptr ? DebugPreview(name).c_str() : "null");
         errno = ENOENT;
         return -1;
     }
-    
-    uint32_t uid = gActiveUid != 0 ? gActiveUid : gLastPathPolicyUid;
-    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, gActiveUid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
-    
-    auto fn =
-        reinterpret_cast<ssize_t (*)(const char*, const char*, void*, size_t)>(gOriginalGetxattr);
+
+    auto fn = reinterpret_cast<ssize_t (*)(const char*, const char*, void*, size_t)>(gOriginalGetxattr);
     if (fn) {
         return fn(targetPath, name, value, size);
     }
@@ -1112,19 +1109,23 @@ extern "C" ssize_t WrappedGetxattr(const char* path, const char* name, void* val
 
 extern "C" ssize_t WrappedLgetxattr(const char* path, const char* name, void* value, size_t size) {
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
+
+    if (gActiveUid == 0) {
+        auto fn = reinterpret_cast<ssize_t (*)(const char*, const char*, void*, size_t)>(gOriginalLgetxattr);
+        return fn ? fn(path, name, value, size) : -1;
+    }
+
     if (ShouldHideLowerFsPath(pathView)) {
         DebugLogPrint(4, "hide lgetxattr path=%s name=%s", DebugPreview(pathView).c_str(),
                       name != nullptr ? DebugPreview(name).c_str() : "null");
         errno = ENOENT;
         return -1;
     }
-    
-    uint32_t uid = gActiveUid != 0 ? gActiveUid : gLastPathPolicyUid;
-    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, gActiveUid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
-    
-    auto fn =
-        reinterpret_cast<ssize_t (*)(const char*, const char*, void*, size_t)>(gOriginalLgetxattr);
+
+    auto fn = reinterpret_cast<ssize_t (*)(const char*, const char*, void*, size_t)>(gOriginalLgetxattr);
     if (fn) {
         return fn(targetPath, name, value, size);
     }
@@ -1134,6 +1135,11 @@ extern "C" ssize_t WrappedLgetxattr(const char* path, const char* name, void* va
 
 extern "C" int WrappedMkdirLibc(const char* path, mode_t mode) {
     const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, mode_t)>(gOriginalMkdir);
+        return fn ? fn(path, mode) : -1;
+    }
+
     RecordMonitorEventPath(uid, "CREATE", path);
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     const bool hidden = ShouldHideLowerFsCreatePath(pathView);
@@ -1149,7 +1155,7 @@ extern "C" int WrappedMkdirLibc(const char* path, mode_t mode) {
         errno = EROFS;
         return -1;
     }
-    
+
     std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
     auto fn = reinterpret_cast<int (*)(const char*, mode_t)>(gOriginalMkdir);
@@ -1162,6 +1168,11 @@ extern "C" int WrappedMkdirLibc(const char* path, mode_t mode) {
 
 extern "C" int WrappedMknod(const char* path, mode_t mode, dev_t dev) {
     const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, mode_t, dev_t)>(gOriginalMknod);
+        return fn ? fn(path, mode, dev) : -1;
+    }
+
     RecordMonitorEventPath(uid, "CREATE", path);
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     const bool hidden = ShouldHideLowerFsCreatePath(pathView);
@@ -1178,7 +1189,7 @@ extern "C" int WrappedMknod(const char* path, mode_t mode, dev_t dev) {
         errno = EROFS;
         return -1;
     }
-    
+
     std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
     auto fn = reinterpret_cast<int (*)(const char*, mode_t, dev_t)>(gOriginalMknod);
@@ -1190,12 +1201,6 @@ extern "C" int WrappedMknod(const char* path, mode_t mode, dev_t dev) {
 }
 
 extern "C" int WrappedOpen(const char* path, int flags, ...) {
-    const uint32_t uid = gActiveUid;
-    if ((flags & O_CREAT) == 0) {
-        RecordMonitorEventPath(uid, "OPEN", path);
-    } else {
-        RecordMonitorEventPath(uid, "CREATE", path);
-    }
     mode_t mode = 0;
     if ((flags & O_CREAT) != 0) {
         va_list args;
@@ -1203,6 +1208,24 @@ extern "C" int WrappedOpen(const char* path, int flags, ...) {
         mode = static_cast<mode_t>(va_arg(args, int));
         va_end(args);
     }
+
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, int, ...)>(gOriginalOpen);
+        if (fn) {
+            if ((flags & O_CREAT) != 0) return fn(path, flags, mode);
+            return fn(path, flags);
+        }
+        errno = ENOSYS;
+        return -1;
+    }
+
+    if ((flags & O_CREAT) == 0) {
+        RecordMonitorEventPath(uid, "OPEN", path);
+    } else {
+        RecordMonitorEventPath(uid, "CREATE", path);
+    }
+
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     const bool hidden = (flags & O_CREAT) != 0 && ShouldHideLowerFsCreatePath(pathView);
     if ((flags & O_CREAT) != 0) {
@@ -1224,7 +1247,7 @@ extern "C" int WrappedOpen(const char* path, int flags, ...) {
             return -1;
         }
     }
-    
+
     std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
     const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
     auto fn = reinterpret_cast<int (*)(const char*, int, ...)>(gOriginalOpen);
@@ -1240,6 +1263,11 @@ extern "C" int WrappedOpen(const char* path, int flags, ...) {
 
 extern "C" int WrappedOpen2(const char* path, int flags) {
     const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, int)>(gOriginalOpen2);
+        return fn ? fn(path, flags) : -1;
+    }
+
     if ((flags & O_CREAT) == 0) {
         RecordMonitorEventPath(uid, "OPEN", path);
     } else {
@@ -1279,6 +1307,11 @@ extern "C" int WrappedOpen2(const char* path, int flags) {
 
 extern "C" int WrappedUnlinkLibc(const char* path) {
     const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*)>(gOriginalUnlinkLibc);
+        return fn ? fn(path) : -1;
+    }
+
     RecordMonitorEventPath(uid, "DELETE", path);
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     if (HiddenPathPolicy::IsReadOnly(uid, std::string(pathView))) {
@@ -1296,6 +1329,11 @@ extern "C" int WrappedUnlinkLibc(const char* path) {
 
 extern "C" int WrappedRmdirLibc(const char* path) {
     const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*)>(gOriginalRmdirLibc);
+        return fn ? fn(path) : -1;
+    }
+
     RecordMonitorEventPath(uid, "DELETE", path);
     const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
     if (HiddenPathPolicy::IsReadOnly(uid, std::string(pathView))) {
@@ -1313,10 +1351,15 @@ extern "C" int WrappedRmdirLibc(const char* path) {
 
 extern "C" int WrappedRenameLibc(const char* oldpath, const char* newpath) {
     const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, const char*)>(gOriginalRenameLibc);
+        return fn ? fn(oldpath, newpath) : -1;
+    }
+
     RecordMonitorEventPath(uid, "RENAME", oldpath);
     const std::string_view oldView = oldpath != nullptr ? std::string_view(oldpath) : std::string_view();
     const std::string_view newView = newpath != nullptr ? std::string_view(newpath) : std::string_view();
-    
+
     if (HiddenPathPolicy::IsReadOnly(uid, std::string(oldView)) || HiddenPathPolicy::IsReadOnly(uid, std::string(newView))) {
         DebugLogPrint(4, "read-only block rename libc old=%s new=%s", std::string(oldView).c_str(), std::string(newView).c_str());
         errno = EROFS;
@@ -1371,8 +1414,7 @@ bool WrappedIsAppAccessiblePath(void* fuse, const std::string& path, uint32_t ui
     if (gOriginalIsAppAccessiblePath == nullptr) {
         return false;
     }
-    gLastPathPolicyUid = uid;
-    gLastPathPolicyPath = path;
+    ScopedActiveUid scopedUid(uid); // 设置当前 FUSE 上下文的 UID
     if (!UnicodePolicy::NeedsSanitization(path)) {
         UnicodePolicy::LogSuspiciousDirectPath("app_accessible", path);
         if (ShouldLogLimited(gAppAccessibleLogCount)) {
@@ -1389,7 +1431,6 @@ bool WrappedIsAppAccessiblePath(void* fuse, const std::string& path, uint32_t ui
     }
     std::string sanitized(path);
     UnicodePolicy::RewriteString(sanitized);
-    gLastPathPolicyPath = sanitized;
     if (ShouldLogLimited(gAppAccessibleLogCount)) {
         DebugLogPrint(3, "app_accessible rewrite uid=%u old=%s new=%s", uid,
                       DebugPreview(path).c_str(), DebugPreview(sanitized).c_str());
