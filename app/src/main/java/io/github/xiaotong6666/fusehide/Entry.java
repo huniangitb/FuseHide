@@ -66,6 +66,8 @@ public class Entry implements IXposedHookLoadPackage {
                 java.util.Arrays.asList(HideConfigNativeBridge.getCurrentHiddenRootEntryNames()),
                 java.util.Arrays.asList(HideConfigNativeBridge.getCurrentHiddenRelativePaths()),
                 java.util.Arrays.asList(HideConfigNativeBridge.getCurrentHiddenPackages()));
+                java.util.Collections.emptyList(),  // redirectRules
+                java.util.Collections.emptyList()); // readOnlyRules
     }
 
     private static void sendConfigStatus(
