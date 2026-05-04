@@ -204,7 +204,7 @@ void WrappedAddDirectoryEntriesFromLowerFs(DIR* dirp, LowerFsDirentFilterFn filt
 
 extern "C" void WrappedPfReaddirPostfilter(fuse_req_t req, uint64_t ino, uint32_t error_in,
                                            off_t off_in, off_t off_out, size_t size_out,
-                                           const void* dirents_in, void* fi) {
+                                           const void* dirents_in, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     ScopedUid scopedUid(uid);
@@ -274,7 +274,7 @@ extern "C" void WrappedPfOpen(fuse_req_t req, uint64_t ino, fuse_file_info* fi) 
     if (fn) fn(req, ino, fi);
 }
 
-extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, void* fi) {
+extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     ScopedUid scopedUid(RuntimeState::ReqUid(req));
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, void*)>(gOriginalPfOpendir);
@@ -405,7 +405,7 @@ extern "C" void WrappedPfCreate(fuse_req_t req, uint64_t parent, const char* nam
     if (fn) fn(req, parent, name, mode, fi);
 }
 
-extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_t off, void* fi) {
+extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_t off, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     ScopedUid scopedUid(uid);
@@ -426,7 +426,7 @@ extern "C" void WrappedPfReaddir(fuse_req_t req, uint64_t ino, size_t size, off_
     gInPfReaddir = false;
 }
 
-extern "C" void WrappedDoReaddirCommon(fuse_req_t req, uint64_t ino, size_t size, off_t off, void* fi, bool plus) {
+extern "C" void WrappedDoReaddirCommon(fuse_req_t req, uint64_t ino, size_t size, off_t off, fuse_file_info* fi, bool plus) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     ScopedUid scopedUid(uid);
@@ -441,7 +441,7 @@ extern "C" void WrappedDoReaddirCommon(fuse_req_t req, uint64_t ino, size_t size
     gCurrentReaddirReqUnique = 0;
 }
 
-extern "C" void WrappedPfReaddirplus(fuse_req_t req, uint64_t ino, size_t size, off_t off, void* fi) {
+extern "C" void WrappedPfReaddirplus(fuse_req_t req, uint64_t ino, size_t size, off_t off, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     ScopedUid scopedUid(uid);
@@ -686,7 +686,7 @@ extern "C" int WrappedReplyErr(fuse_req_t req, int err) {
     return ret;
 }
 
-extern "C" void WrappedPfGetattr(fuse_req_t req, uint64_t ino, void* fi) {
+extern "C" void WrappedPfGetattr(fuse_req_t req, uint64_t ino, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
     ScopedUid scopedUid(uid);
