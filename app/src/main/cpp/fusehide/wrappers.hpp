@@ -29,7 +29,7 @@ extern "C" void WrappedPfLookupPostfilter(fuse_req_t req, uint64_t parent, uint3
                                           const char* name, struct fuse_entry_out* feo,
                                           struct fuse_entry_bpf_out* febo);
 extern "C" void WrappedPfAccess(fuse_req_t req, uint64_t ino, int mask);
-extern "C" void WrappedPfOpen(fuse_req_t req, uint64_t ino, void* fi);
+extern "C" void WrappedPfOpen(fuse_req_t req, uint64_t ino, fuse_file_info* fi);
 extern "C" void WrappedPfOpendir(fuse_req_t req, uint64_t ino, void* fi);
 extern "C" void WrappedPfMkdir(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode);
 extern "C" void WrappedPfMknod(fuse_req_t req, uint64_t parent, const char* name, uint32_t mode,

@@ -157,7 +157,6 @@ DirectoryEntries FilterHiddenDirectoryEntries(uint32_t uid, std::string_view par
         return entries;
     }
 
-    const size_t before = entries.size();
     entries.erase(std::remove_if(entries.begin(), entries.end(),
                                  [&](const auto& entry) {
                                      if (!entry) return false;
