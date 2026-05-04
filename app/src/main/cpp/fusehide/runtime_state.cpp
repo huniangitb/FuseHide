@@ -1,4 +1,3 @@
-===== File: cpp/fusehide/runtime_state.cpp =====
 // Copyright (C) 2026 XiaoTong6666
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
