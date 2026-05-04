@@ -44,11 +44,12 @@ public final class HideConfigNativeBridge {
     public static native String[] getCurrentHiddenPackages();
 
     public static native void applyHideConfig(
-            boolean enableHideAllRootEntries,
-            String[] hideAllRootEntriesExemptions,
-            String[] hiddenRootEntryNames,
-            String[] hiddenRelativePaths,
-            String[] hiddenPackages);
-
+        boolean enableHideAllRootEntries,
+        String[] hideAllRootEntriesExemptions,
+        String[] hiddenRootEntryNames,
+        String[] hiddenRelativePaths,
+        String[] hiddenPackages,
+        String[] redirectRules,
+        String[] readOnlyRules);
     public static native String[] fetchMonitorEvents();
 }
