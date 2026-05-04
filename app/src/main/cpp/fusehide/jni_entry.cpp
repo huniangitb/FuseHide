@@ -179,7 +179,7 @@ Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_fetchMonitorEvents(J
 
 JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_setMonitorEnabled(
     JNIEnv*, jclass, jboolean enabled) {
-    fusehide::gMonitorEnabled.store(enabled == JNI_TRUE, std::memory_order_release);
+    gMonitorEnabled.store(enabled == JNI_TRUE, std::memory_order_release);
 }
 
 JNIEXPORT jint JNICALL Java_io_github_xiaotong6666_fusehide_Utils_rmdir(JNIEnv* env, jclass clazz,
