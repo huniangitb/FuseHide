@@ -63,4 +63,6 @@ public final class HideConfigNativeBridge {
     public static native String[] fetchMonitorEvents();
     
     public static native void setMonitorEnabled(boolean enabled);
+    
+    public static native boolean isMonitorEnabled();
 }

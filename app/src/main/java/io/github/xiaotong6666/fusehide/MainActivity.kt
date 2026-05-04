@@ -66,6 +66,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.state.ToggleableState
@@ -106,47 +107,6 @@ data class MonitorEventItem(
     val uid: Int,
     val path: String
 )
-
-object MonitorLogger {
-    private const val MAX_FILE_SIZE = 1 * 1024 * 1024L 
-    private lateinit var logFile: File
-
-    fun init(context: Context) {
-        if (!::logFile.isInitialized) {
-            logFile = File(context.cacheDir, "monitor_events.log")
-        }
-    }
-
-    fun appendEvents(events: List<String>) {
-        if (!::logFile.isInitialized) return
-        try {
-            val text = events.joinToString("\n") + "\n"
-            logFile.appendText(text)
-            if (logFile.length() > MAX_FILE_SIZE) {
-                val lines = logFile.readLines()
-                val keepLines = lines.takeLast(lines.size / 2)
-                logFile.writeText(keepLines.joinToString("\n") + "\n")
-            }
-        } catch (e: Exception) {
-            Log.e("FuseHide", "MonitorLogger append error", e)
-        }
-    }
-
-    fun loadEvents(): List<MonitorEventItem> {
-        if (!::logFile.isInitialized || !logFile.exists()) return emptyList()
-        return try {
-            logFile.readLines().mapNotNull { parseMonitorEvent(it) }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    fun clear() {
-        if (::logFile.isInitialized && logFile.exists()) {
-            logFile.writeText("")
-        }
-    }
-}
 
 fun parseMonitorEvent(line: String): MonitorEventItem? {
     val bracketIndex = line.indexOf("] ")
@@ -241,7 +201,8 @@ class MainActivity : ComponentActivity() {
     private var pathText2 by mutableStateOf("")
     private var outputText by mutableStateOf("")
 
-    private var isMonitoring by mutableStateOf(false)
+    // 监控状态由底层 Native 传回的状态为准，脱离 UI 依赖
+    private var isNativeMonitoring by mutableStateOf(false)
     private val monitorEvents = mutableStateListOf<MonitorEventItem>()
     private val appNameCache = mutableMapOf<Int, String>()
 
@@ -254,7 +215,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusReceiver: StatusBroadcastReceiver
     private lateinit var configStatusReceiver: BroadcastReceiver
     private lateinit var appliedConfigReceiver: BroadcastReceiver
-    private lateinit var monitorReceiver: BroadcastReceiver
+    private lateinit var monitorStateReceiver: BroadcastReceiver
     private var pendingReloadToken: String? = null
     private var pendingQueryToken: String? = null
 
@@ -273,6 +234,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun broadcastToMediaProvider(intent: Intent) {
+        listOf(
+            "com.google.android.providers.media.module",
+            "com.android.providers.media.module",
+        ).forEach { pkg ->
+            intent.setPackage(pkg)
+            sendBroadcast(intent)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -281,14 +252,10 @@ class MainActivity : ComponentActivity() {
         configStatusText = getString(R.string.config_loaded_saved) + "\n"
         appliedConfigSnapshotText = getString(R.string.config_snapshot_missing) + "\n"
 
-        MonitorLogger.init(this)
-        val initialEvents = MonitorLogger.loadEvents()
-        monitorEvents.addAll(initialEvents)
-
         statusReceiver = StatusBroadcastReceiver(this, 1)
         val filter = IntentFilter(ACTION_SET_STATUS)
         if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(statusReceiver, filter, 2)
+            registerReceiver(statusReceiver, filter, RECEIVER_EXPORTED)
         } else {
             registerReceiver(statusReceiver, filter)
         }
@@ -296,9 +263,7 @@ class MainActivity : ComponentActivity() {
         configStatusReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: android.content.Context?, intent: Intent?) {
                 val token = intent?.getStringExtra(HideConfigStore.EXTRA_RELOAD_TOKEN)
-                if (token == null || token != pendingReloadToken) {
-                    return
-                }
+                if (token == null || token != pendingReloadToken) return
                 pendingReloadToken = null
                 val applied = intent.getBooleanExtra(HideConfigStore.EXTRA_RELOAD_APPLIED, false)
                 val message = intent.getStringExtra(HideConfigStore.EXTRA_RELOAD_MESSAGE) ?: "unknown"
@@ -319,18 +284,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         val configFilter = IntentFilter(HideConfigStore.ACTION_SET_CONFIG_STATUS)
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(configStatusReceiver, configFilter, RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(configStatusReceiver, configFilter)
-        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(configStatusReceiver, configFilter, RECEIVER_EXPORTED)
+        else registerReceiver(configStatusReceiver, configFilter)
 
         appliedConfigReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: android.content.Context?, intent: Intent?) {
                 val token = intent?.getStringExtra(HideConfigStore.EXTRA_QUERY_TOKEN)
-                if (token == null || token != pendingQueryToken) {
-                    return
-                }
+                if (token == null || token != pendingQueryToken) return
                 pendingQueryToken = null
                 val config = HideConfigStore.fromBundle(intent.extras)
                 appliedHideConfig = config
@@ -347,34 +307,32 @@ class MainActivity : ComponentActivity() {
             }
         }
         val appliedConfigFilter = IntentFilter(HideConfigStore.ACTION_SET_APPLIED_HIDE_CONFIG)
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(appliedConfigReceiver, appliedConfigFilter, RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(appliedConfigReceiver, appliedConfigFilter)
-        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(appliedConfigReceiver, appliedConfigFilter, RECEIVER_EXPORTED)
+        else registerReceiver(appliedConfigReceiver, appliedConfigFilter)
 
-        monitorReceiver = object : BroadcastReceiver() {
+        // 接收来自 MediaProvider 的监控状态同步和日志回传
+        monitorStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                val newEvents = intent?.getStringArrayExtra("events")
-                if (newEvents != null) {
-                    val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-                    val formatted = newEvents.map { "[$time] $it" }
-                    MonitorLogger.appendEvents(formatted)
-                    val parsedEvents = formatted.mapNotNull { parseMonitorEvent(it) }
-                    
-                    if (monitorEvents.size > 2000) {
-                        monitorEvents.removeRange(0, monitorEvents.size - 1000)
+                when (intent?.action) {
+                    "io.github.xiaotong6666.fusehide.SYNC_MONITOR_STATUS" -> {
+                        isNativeMonitoring = intent.getBooleanExtra("enabled", false)
                     }
-                    monitorEvents.addAll(parsedEvents)
+                    "io.github.xiaotong6666.fusehide.REPORT_EVENTS" -> {
+                        val eventsArray = intent.getStringArrayExtra("events")
+                        monitorEvents.clear()
+                        if (eventsArray != null) {
+                            monitorEvents.addAll(eventsArray.mapNotNull { parseMonitorEvent(it) })
+                        }
+                    }
                 }
             }
         }
-        val monitorFilter = IntentFilter("io.github.xiaotong6666.fusehide.REPORT_EVENTS")
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(monitorReceiver, monitorFilter, RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(monitorReceiver, monitorFilter)
+        val monitorStateFilter = IntentFilter().apply {
+            addAction("io.github.xiaotong6666.fusehide.SYNC_MONITOR_STATUS")
+            addAction("io.github.xiaotong6666.fusehide.REPORT_EVENTS")
         }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(monitorStateReceiver, monitorStateFilter, RECEIVER_EXPORTED)
+        else registerReceiver(monitorStateReceiver, monitorStateFilter)
 
         setContent {
             fuseHideTheme {
@@ -404,13 +362,15 @@ class MainActivity : ComponentActivity() {
                     pathText = pathText,
                     pathText2 = pathText2,
                     outputText = outputText,
-                    isMonitoring = isMonitoring,
+                    isMonitoring = isNativeMonitoring,
                     monitorEvents = monitorEvents,
                     getAppName = ::getAppName,
-                    onMonitoringToggle = { isMonitoring = it },
-                    onMonitorClear = { 
+                    onMonitoringToggle = { enable ->
+                        broadcastToMediaProvider(Intent("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED").putExtra("enabled", enable))
+                    },
+                    onMonitorClear = {
                         monitorEvents.clear()
-                        MonitorLogger.clear()
+                        broadcastToMediaProvider(Intent("io.github.xiaotong6666.fusehide.CLEAR_EVENTS"))
                     },
                     onStatusClick = ::startStatusCheck,
                     onEnableHideAllRootEntriesChanged = { enableHideAllRootEntries = it },
@@ -448,6 +408,10 @@ class MainActivity : ComponentActivity() {
         startStatusCheck()
         refreshAppliedConfig(autoScrollToResults = false)
         handleDebugIntent(intent)
+        
+        // 启动时查询 Native 当前的真实监控状态并拉取可能存在的遗留日志
+        broadcastToMediaProvider(Intent("io.github.xiaotong6666.fusehide.GET_MONITOR_STATUS"))
+        broadcastToMediaProvider(Intent("io.github.xiaotong6666.fusehide.FETCH_EVENTS"))
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -458,9 +422,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDebugIntent(intent: Intent?) {
         val debugPath = intent?.getStringExtra(EXTRA_DEBUG_PATH)
-        if (debugPath.isNullOrEmpty()) {
-            return
-        }
+        if (debugPath.isNullOrEmpty()) return
         selectedTab = 1
         pathText = debugPath
         val debugActions = intent.getStringExtra(EXTRA_DEBUG_ACTIONS)
@@ -475,7 +437,6 @@ class MainActivity : ComponentActivity() {
             ?.map { it.trim().lowercase() }
             ?.filter { it.isNotEmpty() }
             ?: listOf("stat", "access", "list", "open")
-        Log.d("FuseHide", "runDebugProbe path=$pathText actions=$actions")
         outputText = ""
         appendOutput("Running debug probe path=${PathDebugText.escapeNonAscii(pathText)} actions=${actions.joinToString(",")}\n")
         actions.forEach { action ->
@@ -516,23 +477,16 @@ class MainActivity : ComponentActivity() {
             append("Release: ${Build.VERSION.RELEASE}\n")
             append("Device: ${Build.DEVICE}\n")
             append("SDK: $sdk\n")
-            if (getBooleanSystemProperty("external_storage.sdcardfs.enabled")) {
-                append("sdcardfs=true\n")
-            }
+            if (getBooleanSystemProperty("external_storage.sdcardfs.enabled")) append("sdcardfs=true\n")
             val fuseBpf = getBooleanSystemProperty("ro.fuse.bpf.is_running")
             append("fuse bpf: ${if (fuseBpf) "supported" else "unsupported"}\n")
             val dataIsolation = getBooleanSystemProperty("persist.sys.vold_app_data_isolation_enabled")
             append("AppDataIsolation: ${if (dataIsolation) "enabled" else "disabled"}\n")
-            if (!fuseBpf && !dataIsolation) {
-                append("App data isolation is required to fix Android/data access.\n")
-                append("Use `setprop persist.sys.vold_app_data_isolation_enabled 1` to enable it.\n")
-            }
         }.also { infoText = it }
     }
 
     private fun startStatusCheck() {
         if (statusCheckInFlight) return
-
         hookedPackage = null
         hookedPid = -1
         hookCheckCompleted = false
@@ -546,15 +500,7 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(ACTION_GET_STATUS).setPackage(APP_PACKAGE)
         intent.putExtra("EXTRA_PENDING_INTENT", PendingIntent.getBroadcast(this, 1, intent, 67108864))
         intent.extras?.putBinder("EXTRA_BINDER", binder)
-
-        listOf(
-            "com.google.android.providers.media.module",
-            "com.android.providers.media.module",
-        ).forEach { packageName ->
-            intent.setPackage(packageName)
-            Log.d("FuseHide", "send GET_STATUS to ${intent.`package`}")
-            sendBroadcast(intent)
-        }
+        broadcastToMediaProvider(intent)
 
         statusCheckThread = Thread { onStatusBinderReleased(this, referenceQueue) }.also { it.start() }
     }
@@ -562,7 +508,6 @@ class MainActivity : ComponentActivity() {
     fun updateStatusText() {
         statusCheckInFlight = false
         statusCheckThread = null
-        Log.d("FuseHide", "updateStatusText hookedPackage=$hookedPackage hookCheckCompleted=$hookCheckCompleted pid=$hookedPid")
         statusText = when {
             hookedPackage != null -> getString(R.string.status_hooked, hookedPackage, hookedPid) + "\n"
             hookCheckCompleted -> getString(R.string.status_not_hooked) + "\n"
@@ -577,87 +522,46 @@ class MainActivity : ComponentActivity() {
         try {
             when (mode) {
                 0 -> appendOutput("Stat $displayPath -> OK\n${StructStatFormatter.format(Os.stat(rawPath))}\n")
-
-                1 -> {
-                    Os.access(rawPath, OsConstants.F_OK)
-                    appendOutput("Access $displayPath -> OK\n")
-                }
-
+                1 -> { Os.access(rawPath, OsConstants.F_OK); appendOutput("Access $displayPath -> OK\n") }
                 2 -> {
                     val files = File(rawPath).list()
-                    if (files == null) {
-                        appendOutput("List $displayPath -> None\n")
-                    } else {
+                    if (files == null) appendOutput("List $displayPath -> None\n")
+                    else {
                         appendOutput("List $displayPath -> ${files.size} file(s)\n")
                         files.forEach { appendOutput("$it\n") }
                     }
                 }
-
                 3 -> {
                     val fd = Os.open(rawPath, OsConstants.O_RDONLY or OsConstants.O_CLOEXEC, 0)
-                    try {
-                        Os.close(fd)
-                    } catch (th: Throwable) {
-                        Log.e("FuseHide", "could not close??", th)
-                    }
+                    try { Os.close(fd) } catch (_: Throwable) {}
                     appendOutput("Open $displayPath -> OK\n")
                 }
-
                 4 -> {
                     val selinuxContext = String(Os.getxattr(rawPath, "security.selinux"), StandardCharsets.UTF_8)
                     appendOutput("GetCon $displayPath -> OK\n$selinuxContext\n")
                 }
-
                 5 -> {
                     val res = Utils.create(rawPath)
-                    if (res == 0) {
-                        appendOutput("Create $displayPath -> OK\n")
-                    } else {
-                        appendOutput("Create $displayPath -> ${OsConstants.errnoName(res)}\n")
-                    }
+                    appendOutput(if (res == 0) "Create $displayPath -> OK\n" else "Create $displayPath -> ${OsConstants.errnoName(res)}\n")
                 }
-
                 6 -> {
                     val res = Utils.mkdir(rawPath)
-                    if (res == 0) {
-                        appendOutput("Mkdir $displayPath -> OK\n")
-                    } else {
-                        appendOutput("Mkdir $displayPath -> ${OsConstants.errnoName(res)}\n")
-                    }
+                    appendOutput(if (res == 0) "Mkdir $displayPath -> OK\n" else "Mkdir $displayPath -> ${OsConstants.errnoName(res)}\n")
                 }
-
                 7 -> {
                     val rawPath2 = PathDebugText.unescapeUnicodeLiterals(pathText2) ?: return
-                    if (rawPath2.isEmpty()) {
-                        appendOutput("Rename(Move) requires Path 2\n")
-                        return
-                    }
+                    if (rawPath2.isEmpty()) { appendOutput("Rename(Move) requires Path 2\n"); return }
                     val displayPath2 = PathDebugText.escapeNonAscii(rawPath2)
                     val res = Utils.rename(rawPath, rawPath2)
-                    if (res == 0) {
-                        appendOutput("Rename(Move) $displayPath -> $displayPath2 -> OK\n")
-                    } else {
-                        appendOutput("Rename(Move) $displayPath -> $displayPath2 -> ${OsConstants.errnoName(res)}\n")
-                    }
+                    appendOutput(if (res == 0) "Rename(Move) $displayPath -> $displayPath2 -> OK\n" else "Rename(Move) $displayPath -> $displayPath2 -> ${OsConstants.errnoName(res)}\n")
                 }
-
                 8 -> {
                     val res = Utils.rmdir(rawPath)
-                    if (res == 0) {
-                        appendOutput("Rmdir $displayPath -> OK\n")
-                    } else {
-                        appendOutput("Rmdir $displayPath -> ${OsConstants.errnoName(res)}\n")
-                    }
+                    appendOutput(if (res == 0) "Rmdir $displayPath -> OK\n" else "Rmdir $displayPath -> ${OsConstants.errnoName(res)}\n")
                 }
-
-                
                 9 -> {
                     val res = Utils.unlink(rawPath)
-                    if (res == 0) {
-                        appendOutput("Unlink $displayPath -> OK\n")
-                    } else {
-                        appendOutput("Unlink $displayPath -> ${OsConstants.errnoName(res)}\n")
-                    }
+                    appendOutput(if (res == 0) "Unlink $displayPath -> OK\n" else "Unlink $displayPath -> ${OsConstants.errnoName(res)}\n")
                 }
             }
         } catch (errno: ErrnoException) {
@@ -687,9 +591,7 @@ class MainActivity : ComponentActivity() {
                                 Os.stat(base + pkg.packageName)
                                 existCount++
                                 existPkgs.append(pkg.packageName).append("\n")
-                            } catch (e: ErrnoException) {
-                                
-                            }
+                            } catch (_: ErrnoException) {}
                         }
                         sb.append("Detected $existCount/${pkgs.size} packages\n")
                         sb.append(existPkgs)
@@ -698,25 +600,16 @@ class MainActivity : ComponentActivity() {
             } catch (t: Throwable) {
                 sb.append("Error: ${t.message}\n")
             }
-            runOnUiThread {
-                appendOutput(sb.toString())
-            }
+            runOnUiThread { appendOutput(sb.toString()) }
         }.start()
     }
 
-    private fun insertZwj() {
-        pathText += "\\u200d"
-    }
+    private fun insertZwj() { pathText += "\\u200d" }
 
     private fun copyAll() {
         val clipboardManager = getSystemService(ClipboardManager::class.java) ?: return
         val allText = buildString {
-            append("Info:\n")
-            append(infoText)
-            append("\nStatus:\n")
-            append(statusText)
-            append("\nTest:\n")
-            append(outputText)
+            append("Info:\n").append(infoText).append("\nStatus:\n").append(statusText).append("\nTest:\n").append(outputText)
         }
         clipboardManager.setPrimaryClip(ClipData.newPlainText("", allText))
     }
@@ -734,13 +627,7 @@ class MainActivity : ComponentActivity() {
         val values = HideConfigDefaults.parseEditorText(text)
         val rootNames = mutableListOf<String>()
         val relativePaths = mutableListOf<String>()
-        values.forEach { value ->
-            if (value.contains('/')) {
-                relativePaths += value
-            } else {
-                rootNames += value
-            }
-        }
+        values.forEach { if (it.contains('/')) relativePaths += it else rootNames += it }
         return rootNames to relativePaths
     }
 
@@ -853,11 +740,7 @@ class MainActivity : ComponentActivity() {
             draft.redirectRules.toSet() != applied.redirectRules.toSet() ||
             draft.readOnlyRules.toSet() != applied.readOnlyRules.toSet()
             
-        val summary = if (hasDifferences) {
-            getString(R.string.diff_summary_mismatch)
-        } else {
-            getString(R.string.diff_summary_match)
-        }
+        val summary = if (hasDifferences) getString(R.string.diff_summary_mismatch) else getString(R.string.diff_summary_match)
         return HideConfigDiff(hasDifferences = hasDifferences, summary = summary, details = details)
     }
 
@@ -874,43 +757,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun logUiText(text: String) {
-        text.lineSequence()
-            .map { it.trimEnd() }
-            .filter { it.isNotEmpty() }
-            .forEach { Log.i("FuseHide", it) }
+        text.lineSequence().map { it.trimEnd() }.filter { it.isNotEmpty() }.forEach { Log.i("FuseHide", it) }
     }
 
     private fun defaultPath(): String = "/storage/emulated/0/xinhao"
 
     private fun modeLabel(mode: Int): String = when (mode) {
-        0 -> "Stat"
-        1 -> "Access"
-        2 -> "List"
-        3 -> "Open"
-        4 -> "GetCon"
-        5 -> "Create"
-        6 -> "Mkdir"
-        7 -> "Rename(Move)"
-        8 -> "Rmdir"
-        9 -> "Unlink"
+        0 -> "Stat"; 1 -> "Access"; 2 -> "List"; 3 -> "Open"; 4 -> "GetCon"
+        5 -> "Create"; 6 -> "Mkdir"; 7 -> "Rename(Move)"; 8 -> "Rmdir"; 9 -> "Unlink"
         else -> "Unknown"
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        val enableIntent = Intent("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED")
-        enableIntent.putExtra("enabled", false)
-        listOf(
-            "com.google.android.providers.media.module",
-            "com.android.providers.media.module",
-        ).forEach { pkg ->
-            enableIntent.setPackage(pkg)
-            sendBroadcast(enableIntent)
-        }
         unregisterReceiver(statusReceiver)
         unregisterReceiver(configStatusReceiver)
         unregisterReceiver(appliedConfigReceiver)
-        unregisterReceiver(monitorReceiver)
+        unregisterReceiver(monitorStateReceiver)
         statusCheckThread?.interrupt()
     }
 }
@@ -981,19 +844,9 @@ private fun fuseHideHomeScreen(
     val pagerState = rememberPagerState(initialPage = selectedTab, pageCount = { 3 })
     val coroutineScope = rememberCoroutineScope()
     val scrollBehavior = MiuixScrollBehavior()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     LaunchedEffect(isMonitoring) {
-        val enableIntent = Intent("io.github.xiaotong6666.fusehide.SET_MONITOR_ENABLED")
-        enableIntent.putExtra("enabled", isMonitoring)
-        listOf(
-            "com.google.android.providers.media.module",
-            "com.android.providers.media.module",
-        ).forEach { pkg ->
-            enableIntent.setPackage(pkg)
-            context.sendBroadcast(enableIntent)
-        }
-
         if (isMonitoring) {
             while (true) {
                 val fetchIntent = Intent("io.github.xiaotong6666.fusehide.FETCH_EVENTS")
@@ -1358,7 +1211,7 @@ private fun configScreen(
                         .fillMaxWidth()
                         .padding(14.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.Top,
+                    verticalAlignment = Alignment.Top,
                 ) {
                     Checkbox(
                         state = if (enableHideAllRootEntries) ToggleableState.On else ToggleableState.Off,
@@ -1500,7 +1353,7 @@ private fun configScreen(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = androidx.compose.ui.Alignment.Top,
+                verticalAlignment = Alignment.Top,
             ) {
                 metricCard(stringResource(R.string.label_last_ack), lastAckResultText, Modifier.weight(1f))
                 metricCard(stringResource(R.string.label_applied_at), lastApplyTimeText, Modifier.weight(1f))
@@ -1842,7 +1695,7 @@ private fun actionGrid(actions: List<GridActionItem>) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center,
-                        color = if (item.isError) MiuixTheme.colorScheme.onError else androidx.compose.ui.graphics.Color.Unspecified,
+                        color = if (item.isError) MiuixTheme.colorScheme.onError else Color.Unspecified,
                         style = MiuixTheme.textStyles.button.copy(fontWeight = FontWeight.Medium),
                     )
                 }

@@ -217,6 +217,11 @@ JNIEXPORT void JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBrid
     gMonitorEnabled.store(enabled == JNI_TRUE, std::memory_order_release);
 }
 
+JNIEXPORT jboolean JNICALL Java_io_github_xiaotong6666_fusehide_HideConfigNativeBridge_isMonitorEnabled(
+    JNIEnv*, jclass) {
+    return gMonitorEnabled.load(std::memory_order_acquire) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL Java_io_github_xiaotong6666_fusehide_Utils_rmdir(JNIEnv* env, jclass clazz,
                                                                         jstring path) {
     (void)clazz;
