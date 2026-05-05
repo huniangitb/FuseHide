@@ -1,4 +1,3 @@
-// ===== File: app/src/main/cpp/fusehide/fuse_wrappers.cpp =====
 // Copyright (C) 2026 XiaoTong6666
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -129,7 +128,7 @@ void InvalidateFilteredParentChildren(std::string_view parentPath,
 
 }  // namespace
 
-// --- 路径重定向辅助函数 ---
+// --- 路径重定向与只读规则 核心匹配逻辑 ---
 std::string NormalizeLowerPathToFuse(const std::string& path) {
     if (path.starts_with("/data/media/0")) return "/storage/emulated/0" + path.substr(13);
     if (path.starts_with("/mnt/pass_through/0/emulated/0")) return "/storage/emulated/0" + path.substr(30);
@@ -142,6 +141,106 @@ std::string NormalizeFuseToLowerPath(const std::string& path, const std::string&
         if (originalLower.starts_with("/mnt/pass_through/0/emulated/0")) return "/mnt/pass_through/0/emulated/0" + path.substr(19);
     }
     return path;
+}
+
+bool HiddenPathPolicy::IsReadOnly(uint32_t uid, const std::string& path) {
+    if (uid == 0 || path.empty()) return false;
+    auto config = CurrentHideConfig();
+    if (config->readOnlyRules.empty()) return false;
+
+    auto pkgs = GetPackagesForUid(uid);
+    if (pkgs.empty()) return false;
+
+    for (const auto& rule : config->readOnlyRules) {
+        bool pkgMatch = false;
+        if (rule.packageName.empty() || rule.packageName == "*") {
+            pkgMatch = true;
+        } else {
+            for (const auto& pkg : pkgs) {
+                if (fnmatch(rule.packageName.c_str(), pkg.c_str(), 0) == 0) {
+                    pkgMatch = true;
+                    break;
+                }
+            }
+        }
+        if (!pkgMatch) continue;
+
+        std::string pat = rule.pattern;
+        bool hasWildcard = (pat.find('*') != std::string::npos || pat.find('?') != std::string::npos);
+
+        if (hasWildcard) {
+            if (pat.ends_with("/*") && path == pat.substr(0, pat.length() - 2)) return true;
+            if (fnmatch(pat.c_str(), path.c_str(), FNM_PATHNAME) == 0) return true;
+        } else {
+            // 智能目录前缀匹配
+            std::string dirPat = pat;
+            if (!dirPat.ends_with('/')) dirPat += '/';
+
+            if (path == pat || path + "/" == dirPat) return true; // 自身匹配
+            if (path.starts_with(dirPat)) return true;            // 子文件匹配
+        }
+    }
+    return false;
+}
+
+std::string HiddenPathPolicy::GetRedirectTarget(uint32_t uid, const std::string& fusePath) {
+    if (uid == 0 || fusePath.empty()) return "";
+    auto config = CurrentHideConfig();
+    if (config->redirectRules.empty()) return "";
+
+    auto pkgs = GetPackagesForUid(uid);
+    if (pkgs.empty()) return "";
+
+    for (const auto& rule : config->redirectRules) {
+        bool pkgMatch = false;
+        if (rule.packageName.empty() || rule.packageName == "*") {
+            pkgMatch = true;
+        } else {
+            for (const auto& pkg : pkgs) {
+                if (fnmatch(rule.packageName.c_str(), pkg.c_str(), 0) == 0) {
+                    pkgMatch = true;
+                    break;
+                }
+            }
+        }
+        if (!pkgMatch) continue;
+
+        std::string pat = rule.pattern;
+        std::string tar = rule.target;
+
+        bool isWildcardPrefix = false;
+        if (pat.ends_with("/*")) {
+            pat = pat.substr(0, pat.length() - 2);
+            isWildcardPrefix = true;
+        } else if (pat.ends_with("*") && !pat.ends_with("\\*")) {
+            pat = pat.substr(0, pat.length() - 1);
+            isWildcardPrefix = true;
+        }
+
+        if (isWildcardPrefix || pat.find('*') == std::string::npos) {
+            // 智能目录前缀匹配及替换
+            std::string dirPat = pat;
+            if (!dirPat.ends_with('/')) dirPat += '/';
+
+            // 完全匹配目标文件夹本身
+            if (fusePath == pat || fusePath + "/" == dirPat) {
+                return tar;
+            }
+            // 匹配其子文件并替换前缀
+            if (fusePath.starts_with(dirPat)) {
+                std::string tail = fusePath.substr(dirPat.length());
+                std::string res = tar;
+                if (!res.ends_with('/')) res += '/';
+                res += tail;
+                return res;
+            }
+        } else {
+            if (fnmatch(rule.pattern.c_str(), fusePath.c_str(), FNM_PATHNAME) == 0) {
+                return tar;
+            }
+        }
+    }
+    return "";
 }
 
 std::string ProcessRedirectPath(const char* path, uint32_t uid) {
@@ -221,7 +320,7 @@ DirectoryEntries FilterHiddenDirectoryEntries(uint32_t uid, std::string_view par
 DirectoryEntries WrappedGetDirectoryEntries(void* wrapper, uint32_t uid, const std::string& path,
                                             DIR* dirp) {
     auto fn = reinterpret_cast<GetDirectoryEntriesFn>(gOriginalGetDirectoryEntries);
-    ScopedActiveUid scopedUid(uid); // 传递 UID 给内部下层调用
+    ScopedActiveUid scopedUid(uid);
     DirectoryEntries entries = fn ? fn(wrapper, uid, path, dirp) : DirectoryEntries();
     if (gCurrentReaddirReqUnique != 0) {
         std::lock_guard<std::mutex> lock(gPendingReaddirContextsMutex);
