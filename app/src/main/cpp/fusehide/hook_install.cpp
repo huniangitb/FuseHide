@@ -1064,6 +1064,12 @@ void InstallMinimalDebugHooks(const ModuleInfo& module, const FileElfContext& fi
                                    &gOriginalRmdirLibc, "rmdir_libc");
     InstallFileCompareHookIfNeeded(fileContext.elfInfo, "rename", "rename", (void*)WrappedRenameLibc,
                                    &gOriginalRenameLibc, "rename_libc");
+    InstallFileCompareHookIfNeeded(fileContext.elfInfo, "unlinkat", "unlinkat", (void*)WrappedUnlinkat,
+                                   &gOriginalUnlinkat, "unlinkat");
+    InstallFileCompareHookIfNeeded(fileContext.elfInfo, "renameat", "renameat", (void*)WrappedRenameat,
+                                   &gOriginalRenameat, "renameat");
+    InstallFileCompareHookIfNeeded(fileContext.elfInfo, "renameat2", "renameat2", (void*)WrappedRenameat2,
+                                   &gOriginalRenameat2, "renameat2");
     InstallFileCompareHookIfNeeded(fileContext.elfInfo, "opendir", "opendir", (void*)WrappedOpendir,
                                    &gOriginalOpendir, "opendir");
     InstallFileCompareHookIfNeeded(fileContext.elfInfo, "access", "access", (void*)WrappedAccess,

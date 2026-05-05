@@ -1484,6 +1484,41 @@ extern "C" int WrappedRenameLibc(const char* oldpath, const char* newpath) {
     return -1;
 }
 
+extern "C" int WrappedUnlinkat(int dirfd, const char* path, int flags) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(int, const char*, int)>(gOriginalUnlinkat);
+        return fn ? fn(dirfd, path, flags) : -1;
+    }
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+    auto fn = reinterpret_cast<int (*)(int, const char*, int)>(gOriginalUnlinkat);
+    return fn ? fn(dirfd, actualPath.c_str(), flags) : -1;
+}
+
+extern "C" int WrappedRenameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(int, const char*, int, const char*)>(gOriginalRenameat);
+        return fn ? fn(olddirfd, oldpath, newdirfd, newpath) : -1;
+    }
+    std::string sOld = oldpath != nullptr ? ProcessRedirectPath(oldpath, uid) : "";
+    std::string sNew = newpath != nullptr ? ProcessRedirectPath(newpath, uid) : "";
+    auto fn = reinterpret_cast<int (*)(int, const char*, int, const char*)>(gOriginalRenameat);
+    return fn ? fn(olddirfd, sOld.c_str(), newdirfd, sNew.c_str()) : -1;
+}
+
+extern "C" int WrappedRenameat2(int olddirfd, const char* oldpath, int newdirfd, const char* newpath, unsigned int flags) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(int, const char*, int, const char*, unsigned int)>(gOriginalRenameat2);
+        return fn ? fn(olddirfd, oldpath, newdirfd, newpath, flags) : -1;
+    }
+    std::string sOld = oldpath != nullptr ? ProcessRedirectPath(oldpath, uid) : "";
+    std::string sNew = newpath != nullptr ? ProcessRedirectPath(newpath, uid) : "";
+    auto fn = reinterpret_cast<int (*)(int, const char*, int, const char*, unsigned int)>(gOriginalRenameat2);
+    return fn ? fn(olddirfd, sOld.c_str(), newdirfd, sNew.c_str(), flags) : -1;
+}
+
 extern "C" int WrappedAccess(const char* path, int mode) {
     const uint32_t uid = gActiveUid;
     if (uid == 0) {
