@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #include "wrappers.hpp"
-
+#include <fnmatch.h>
 namespace fusehide {
 
 extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name);
