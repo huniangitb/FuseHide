@@ -359,27 +359,31 @@ void WrappedAddDirectoryEntriesFromLowerFs(DIR* dirp, LowerFsDirentFilterFn filt
     if (fn == nullptr) {
         return;
     }
-    fn(dirp, filter, entries);
+
+    const uint32_t uid = gActiveUid;
+    std::string parentPath = ReadDirectoryPathFromDir(dirp);
+
+    // 获取重定向目标
+    std::string redirectedPath = ProcessRedirectPath(parentPath.c_str(), uid);
+    if (redirectedPath != parentPath && !redirectedPath.empty()) {
+        // 如果有重定向，我们需要重新打开目录到目标路径
+        DIR* newDirp = opendir(redirectedPath.c_str());
+        if (newDirp != nullptr) {
+            fn(newDirp, filter, entries);
+            closedir(newDirp);
+        } else {
+            fn(dirp, filter, entries);
+        }
+    } else {
+        fn(dirp, filter, entries);
+    }
+
     if (entries == nullptr || entries->empty()) {
         return;
     }
 
-    const uint32_t uid = gActiveUid;
     if (uid == 0 || !HiddenPathPolicy::IsTestHiddenUid(uid)) {
         return;
-    }
-
-    std::string parentPath = ReadDirectoryPathFromDir(dirp);
-    if (parentPath.empty()) {
-        return;
-    }
-
-    if (gCurrentReaddirReqUnique != 0) {
-        std::lock_guard<std::mutex> lock(gPendingReaddirContextsMutex);
-        auto it = gPendingReaddirContexts.find(gCurrentReaddirReqUnique);
-        if (it != gPendingReaddirContexts.end() && !it->second.path.empty()) {
-            parentPath = it->second.path;
-        }
     }
 
     const size_t before = entries->size();
@@ -968,6 +972,16 @@ extern "C" int WrappedReplyBuf(fuse_req_t req, const char* buf, size_t size) {
     const bool filterReaddirplus = gInPfReaddirplus;
     const bool requireParentMatch = filterIno != 0;
     const char* filterMode = nullptr;
+    
+    // 处理重定向目录的 Inode 同步
+    if (req != nullptr && hasPendingContext) {
+        std::string target = ProcessRedirectPath(pendingContext.path.c_str(), reqUid);
+        if (target != pendingContext.path) {
+            // 这里我们不修改缓冲区，因为底层文件系统已经返回了正确的目标内容
+            // 但我们需要确保调用者（MediaProvider）识别到这是一个已重定向的上下文
+            DebugLogPrint(4, "reply_buf: directory redirected %s -> %s", pendingContext.path.c_str(), target.c_str());
+        }
+    }
     uint32_t fallbackHiddenUid = 0;
     const std::optional<std::string> fallbackParentPath =
         filterIno == 0 ? LookupRecentHiddenParentPath(requestFilterUid, &fallbackHiddenUid)
@@ -1146,11 +1160,19 @@ extern "C" int WrappedReplyErr(fuse_req_t req, int err) {
 extern "C" void WrappedPfGetattr(fuse_req_t req, uint64_t ino, fuse_file_info* fi) {
     RuntimeState::RememberFuseSession(req);
     const uint32_t uid = RuntimeState::ReqUid(req);
-    gZeroAttrCacheForCurrentGetattr = IsTrackedHiddenSubtreeInode(ino);
-    if (HiddenPathPolicy::IsTestHiddenUid(uid)) {
-        DebugLogPrint(4, "pf_getattr test uid=%u ino=0x%lx", static_cast<unsigned>(uid),
-                      (unsigned long)ino);
+    
+    // 1. 获取当前 inode 对应的路径
+    auto path = LookupTrackedPathForInode(ino);
+    if (path.has_value()) {
+        // 2. 计算重定向后的真实路径
+        std::string actualPath = ProcessRedirectPath(path->c_str(), uid);
+        
+        // 3. 如果路径发生了重定向，我们需要强制刷新属性，不能使用旧的 inode 缓存
+        if (actualPath != *path) {
+             gZeroAttrCacheForCurrentGetattr = true; // 触发 WrappedReplyAttr 使用 timeout=0
+        }
     }
+
     auto fn = reinterpret_cast<void (*)(fuse_req_t, uint64_t, void*)>(gOriginalPfGetattr);
     if (fn) {
         gInPfGetattr = true;
