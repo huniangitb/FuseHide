@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "wrappers.hpp"
-#include <fnmatch.h>
 
 namespace fusehide {
 
