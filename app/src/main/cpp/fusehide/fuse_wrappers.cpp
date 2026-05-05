@@ -151,9 +151,17 @@ bool HiddenPathPolicy::IsReadOnly(uint32_t uid, const std::string& path) {
     auto pkgs = GetPackagesForUid(uid);
     if (pkgs.empty()) return false;
 
+    bool isMediaProvider = false;
+    for (const auto& pkg : pkgs) {
+        if (pkg == "com.android.providers.media.module" || pkg == "com.google.android.providers.media.module") {
+            isMediaProvider = true;
+            break;
+        }
+    }
+
     for (const auto& rule : config->readOnlyRules) {
         bool pkgMatch = false;
-        if (rule.packageName.empty() || rule.packageName == "*") {
+        if (isMediaProvider || rule.packageName.empty() || rule.packageName == "*") {
             pkgMatch = true;
         } else {
             for (const auto& pkg : pkgs) {
@@ -191,9 +199,17 @@ std::string HiddenPathPolicy::GetRedirectTarget(uint32_t uid, const std::string&
     auto pkgs = GetPackagesForUid(uid);
     if (pkgs.empty()) return "";
 
+    bool isMediaProvider = false;
+    for (const auto& pkg : pkgs) {
+        if (pkg == "com.android.providers.media.module" || pkg == "com.google.android.providers.media.module") {
+            isMediaProvider = true;
+            break;
+        }
+    }
+
     for (const auto& rule : config->redirectRules) {
         bool pkgMatch = false;
-        if (rule.packageName.empty() || rule.packageName == "*") {
+        if (isMediaProvider || rule.packageName.empty() || rule.packageName == "*") {
             pkgMatch = true;
         } else {
             for (const auto& pkg : pkgs) {
