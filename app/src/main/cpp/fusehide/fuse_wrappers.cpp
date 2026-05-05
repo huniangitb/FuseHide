@@ -321,7 +321,8 @@ DirectoryEntries WrappedGetDirectoryEntries(void* wrapper, uint32_t uid, const s
                                             DIR* dirp) {
     auto fn = reinterpret_cast<GetDirectoryEntriesFn>(gOriginalGetDirectoryEntries);
     ScopedActiveUid scopedUid(uid);
-    DirectoryEntries entries = fn ? fn(wrapper, uid, path, dirp) : DirectoryEntries();
+    std::string targetPath = ProcessRedirectPath(path.c_str(), uid);
+    DirectoryEntries entries = fn ? fn(wrapper, uid, targetPath, dirp) : DirectoryEntries();
     if (gCurrentReaddirReqUnique != 0) {
         std::lock_guard<std::mutex> lock(gPendingReaddirContextsMutex);
         auto it = gPendingReaddirContexts.find(gCurrentReaddirReqUnique);
@@ -355,6 +356,14 @@ void WrappedAddDirectoryEntriesFromLowerFs(DIR* dirp, LowerFsDirentFilterFn filt
     std::string parentPath = ReadDirectoryPathFromDir(dirp);
     if (parentPath.empty()) {
         return;
+    }
+
+    if (gCurrentReaddirReqUnique != 0) {
+        std::lock_guard<std::mutex> lock(gPendingReaddirContextsMutex);
+        auto it = gPendingReaddirContexts.find(gCurrentReaddirReqUnique);
+        if (it != gPendingReaddirContexts.end() && !it->second.path.empty()) {
+            parentPath = it->second.path;
+        }
     }
 
     const size_t before = entries->size();
@@ -1471,6 +1480,84 @@ extern "C" int WrappedRenameLibc(const char* oldpath, const char* newpath) {
     const char* tNew = newpath != nullptr ? sNew.c_str() : nullptr;
     auto fn = reinterpret_cast<int (*)(const char*, const char*)>(gOriginalRenameLibc);
     if (fn) return fn(tOld, tNew);
+    errno = ENOSYS;
+    return -1;
+}
+
+extern "C" int WrappedAccess(const char* path, int mode) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*, int)>(gOriginalAccess);
+        return fn ? fn(path, mode) : -1;
+    }
+
+    const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
+    if (ShouldHideLowerFsPath(pathView)) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    if (mode == W_OK && HiddenPathPolicy::IsReadOnly(uid, std::string(pathView))) {
+        errno = EROFS;
+        return -1;
+    }
+
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+    const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
+
+    auto fn = reinterpret_cast<int (*)(const char*, int)>(gOriginalAccess);
+    if (fn) {
+        return fn(targetPath, mode);
+    }
+    errno = ENOSYS;
+    return -1;
+}
+
+extern "C" DIR* WrappedOpendir(const char* name) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<DIR* (*)(const char*)>(gOriginalOpendir);
+        return fn ? fn(name) : nullptr;
+    }
+
+    RecordMonitorEventPath(uid, "OPENDIR", name);
+    const std::string_view pathView = name != nullptr ? std::string_view(name) : std::string_view();
+    
+    if (ShouldHideLowerFsPath(pathView)) {
+        DebugLogPrint(4, "hide opendir path=%s", DebugPreview(pathView).c_str());
+        errno = ENOENT;
+        return nullptr;
+    }
+
+    std::string actualPath = name != nullptr ? ProcessRedirectPath(name, uid) : "";
+    const char* targetPath = name != nullptr ? actualPath.c_str() : nullptr;
+
+    auto fn = reinterpret_cast<DIR* (*)(const char*)>(gOriginalOpendir);
+    if (fn) {
+        return fn(targetPath);
+    }
+    errno = ENOSYS;
+    return nullptr;
+}
+
+extern "C" int WrappedRemove(const char* path) {
+    const uint32_t uid = gActiveUid;
+    if (uid == 0) {
+        auto fn = reinterpret_cast<int (*)(const char*)>(gOriginalRemove);
+        return fn ? fn(path) : -1;
+    }
+
+    RecordMonitorEventPath(uid, "DELETE", path);
+    const std::string_view pathView = path != nullptr ? std::string_view(path) : std::string_view();
+    if (HiddenPathPolicy::IsReadOnly(uid, std::string(pathView))) {
+        errno = EROFS;
+        return -1;
+    }
+
+    std::string actualPath = path != nullptr ? ProcessRedirectPath(path, uid) : "";
+    const char* targetPath = path != nullptr ? actualPath.c_str() : nullptr;
+    auto fn = reinterpret_cast<int (*)(const char*)>(gOriginalRemove);
+    if (fn) return fn(targetPath);
     errno = ENOSYS;
     return -1;
 }

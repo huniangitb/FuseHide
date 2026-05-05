@@ -1064,6 +1064,12 @@ void InstallMinimalDebugHooks(const ModuleInfo& module, const FileElfContext& fi
                                    &gOriginalRmdirLibc, "rmdir_libc");
     InstallFileCompareHookIfNeeded(fileContext.elfInfo, "rename", "rename", (void*)WrappedRenameLibc,
                                    &gOriginalRenameLibc, "rename_libc");
+    InstallFileCompareHookIfNeeded(fileContext.elfInfo, "opendir", "opendir", (void*)WrappedOpendir,
+                                   &gOriginalOpendir, "opendir");
+    InstallFileCompareHookIfNeeded(fileContext.elfInfo, "access", "access", (void*)WrappedAccess,
+                                   &gOriginalAccess, "access");
+    InstallFileCompareHookIfNeeded(fileContext.elfInfo, "remove", "remove", (void*)WrappedRemove,
+                                   &gOriginalRemove, "remove");
                                    
     if (gOriginalGetDirectoryEntries == nullptr) {
         TryInstallCriticalHookFromPlan(module, installPlan.getDirectoryEntries,
@@ -1333,6 +1339,15 @@ void InstallAdvancedDebugHooks(const ModuleInfo& module) {
             PatchRuntimeRelocationSlots(*runtimeDyn, module.base, getpagesize(), "rename",
                                         "rename", (void*)WrappedRenameLibc, &gOriginalRenameLibc,
                                         "rename_libc");
+            PatchRuntimeRelocationSlots(*runtimeDyn, module.base, getpagesize(), "opendir",
+                                        "opendir", (void*)WrappedOpendir, &gOriginalOpendir,
+                                        "opendir");
+            PatchRuntimeRelocationSlots(*runtimeDyn, module.base, getpagesize(), "access",
+                                        "access", (void*)WrappedAccess, &gOriginalAccess,
+                                        "access");
+            PatchRuntimeRelocationSlots(*runtimeDyn, module.base, getpagesize(), "remove",
+                                        "remove", (void*)WrappedRemove, &gOriginalRemove,
+                                        "remove");
         }
     } else if (auto fileContext = BuildFileElfContext(module); fileContext.has_value()) {
         InstallMinimalDebugHooks(module, *fileContext);

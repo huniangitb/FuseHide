@@ -308,6 +308,9 @@ extern void* gOriginalEqualsIgnoreCase;
 extern void* gOriginalUnlinkLibc;
 extern void* gOriginalRmdirLibc;
 extern void* gOriginalRenameLibc;
+extern void* gOriginalOpendir;
+extern void* gOriginalAccess;
+extern void* gOriginalRemove;
 
 extern std::atomic<int> gAppAccessibleLogCount;
 extern std::atomic<int> gPackageOwnedLogCount;
