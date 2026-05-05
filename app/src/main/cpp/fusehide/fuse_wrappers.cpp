@@ -542,14 +542,25 @@ extern "C" void WrappedPfUnlink(fuse_req_t req, uint64_t parent, const char* nam
     RecordMonitorEvent(req, "DELETE", parent, name);
     RuntimeState::RememberFuseSession(req);
     uint32_t uid = RuntimeState::ReqUid(req);
-    const HiddenNamedTargetKind kind =
-        ClassifyHiddenNamedTarget(uid, parent, name);
+    const HiddenNamedTargetKind kind = ClassifyHiddenNamedTarget(uid, parent, name);
     if (ReplyHiddenNamedTargetError(req, "pf_unlink", kind, ENOENT, ENOENT)) {
         return;
     }
 
     if (auto parentPath = LookupTrackedPathForInode(parent)) {
         std::string childPath = HiddenPathPolicy::JoinPathComponent(*parentPath, name ? name : "");
+        
+        std::string actualPath = ProcessRedirectPath(childPath.c_str(), uid);
+        if (actualPath != childPath) {
+            std::string lowerPath = actualPath;
+            if (lowerPath.starts_with("/storage/emulated/0")) {
+                lowerPath = "/data/media/0" + lowerPath.substr(19);
+            }
+            int res = unlink(lowerPath.c_str());
+            int err = res == 0 ? 0 : errno;
+            if (ReplyErrorBridge::Reply(req, err, "pf_unlink").has_value()) return;
+        }
+
         if (HiddenPathPolicy::IsReadOnly(uid, childPath)) {
             DebugLogPrint(4, "read-only block unlink path=%s", childPath.c_str());
             if (ReplyErrorBridge::Reply(req, EROFS, "pf_unlink").has_value()) return;
@@ -567,14 +578,25 @@ extern "C" void WrappedPfRmdir(fuse_req_t req, uint64_t parent, const char* name
     RecordMonitorEvent(req, "DELETE", parent, name);
     RuntimeState::RememberFuseSession(req);
     uint32_t uid = RuntimeState::ReqUid(req);
-    const HiddenNamedTargetKind kind =
-        ClassifyHiddenNamedTarget(uid, parent, name);
+    const HiddenNamedTargetKind kind = ClassifyHiddenNamedTarget(uid, parent, name);
     if (ReplyHiddenNamedTargetError(req, "pf_rmdir", kind, ENOENT, ENOENT)) {
         return;
     }
 
     if (auto parentPath = LookupTrackedPathForInode(parent)) {
         std::string childPath = HiddenPathPolicy::JoinPathComponent(*parentPath, name ? name : "");
+        
+        std::string actualPath = ProcessRedirectPath(childPath.c_str(), uid);
+        if (actualPath != childPath) {
+            std::string lowerPath = actualPath;
+            if (lowerPath.starts_with("/storage/emulated/0")) {
+                lowerPath = "/data/media/0" + lowerPath.substr(19);
+            }
+            int res = rmdir(lowerPath.c_str());
+            int err = res == 0 ? 0 : errno;
+            if (ReplyErrorBridge::Reply(req, err, "pf_rmdir").has_value()) return;
+        }
+
         if (HiddenPathPolicy::IsReadOnly(uid, childPath)) {
             DebugLogPrint(4, "read-only block rmdir path=%s", childPath.c_str());
             if (ReplyErrorBridge::Reply(req, EROFS, "pf_rmdir").has_value()) return;
@@ -610,17 +632,42 @@ extern "C" void WrappedPfRename(fuse_req_t req, uint64_t parent, const char* nam
     }
 
     if (auto parentPath = LookupTrackedPathForInode(parent)) {
-        std::string childPath = HiddenPathPolicy::JoinPathComponent(*parentPath, name ? name : "");
-        if (HiddenPathPolicy::IsReadOnly(uid, childPath)) {
-            DebugLogPrint(4, "read-only block rename src=%s", childPath.c_str());
-            if (ReplyErrorBridge::Reply(req, EROFS, "pf_rename").has_value()) return;
-        }
-    }
-    if (auto newParentPath = LookupTrackedPathForInode(new_parent)) {
-        std::string newChildPath = HiddenPathPolicy::JoinPathComponent(*newParentPath, new_name ? new_name : "");
-        if (HiddenPathPolicy::IsReadOnly(uid, newChildPath)) {
-            DebugLogPrint(4, "read-only block rename dst=%s", newChildPath.c_str());
-            if (ReplyErrorBridge::Reply(req, EROFS, "pf_rename").has_value()) return;
+        if (auto newParentPath = LookupTrackedPathForInode(new_parent)) {
+            std::string oldPath = HiddenPathPolicy::JoinPathComponent(*parentPath, name ? name : "");
+            std::string newPath = HiddenPathPolicy::JoinPathComponent(*newParentPath, new_name ? new_name : "");
+            
+            std::string actualOld = ProcessRedirectPath(oldPath.c_str(), uid);
+            std::string actualNew = ProcessRedirectPath(newPath.c_str(), uid);
+            
+            if (actualOld != oldPath || actualNew != newPath) {
+                std::string lowerOld = actualOld;
+                if (lowerOld.starts_with("/storage/emulated/0")) {
+                    lowerOld = "/data/media/0" + lowerOld.substr(19);
+                }
+                std::string lowerNew = actualNew;
+                if (lowerNew.starts_with("/storage/emulated/0")) {
+                    lowerNew = "/data/media/0" + lowerNew.substr(19);
+                }
+                
+                int res;
+                if (flags == 0) {
+                    res = rename(lowerOld.c_str(), lowerNew.c_str());
+                } else {
+                    res = -1;
+                    errno = EINVAL;
+                }
+                int err = res == 0 ? 0 : errno;
+                if (ReplyErrorBridge::Reply(req, err, "pf_rename").has_value()) return;
+            }
+
+            if (HiddenPathPolicy::IsReadOnly(uid, actualOld)) {
+                DebugLogPrint(4, "read-only block rename src=%s", actualOld.c_str());
+                if (ReplyErrorBridge::Reply(req, EROFS, "pf_rename").has_value()) return;
+            }
+            if (HiddenPathPolicy::IsReadOnly(uid, actualNew)) {
+                DebugLogPrint(4, "read-only block rename dst=%s", actualNew.c_str());
+                if (ReplyErrorBridge::Reply(req, EROFS, "pf_rename").has_value()) return;
+            }
         }
     }
 
