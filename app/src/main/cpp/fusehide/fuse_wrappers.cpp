@@ -14,6 +14,7 @@
 
 #include "wrappers.hpp"
 #include <fnmatch.h>
+#include <functional>
 namespace fusehide {
 
 extern "C" void RecordMonitorEvent(fuse_req_t req, const char* type, uint64_t parentIno, const char* name);
@@ -1229,6 +1230,18 @@ extern "C" int WrappedLstat(const char* path, struct stat* st) {
     auto fn = reinterpret_cast<int (*)(const char*, struct stat*)>(gOriginalLstat);
     if (fn) {
         const int ret = fn(targetPath, st);
+        if (ret == 0 && path != nullptr && actualPath != path) {
+            struct stat origSt;
+            // 对于重定向请求，把源路径的 inode 塞进目标属性中，以隔离 FUSE 缓存避免信息不同步污染
+            if (fn(path, &origSt) == 0) {
+                st->st_ino = origSt.st_ino;
+                st->st_dev = origSt.st_dev;
+            } else {
+                // 如果源路径本身不存在，基于原路径生成伪装且固定的 inode
+                st->st_ino = std::hash<std::string>{}(path);
+            }
+        }
+
         if (ret == 0 && gInPfGetattr && gPfGetattrIno != 0) {
             RememberTrackedPathForInode(gPfGetattrIno, pathView);
             if (HiddenPathPolicy::IsTestHiddenUid(gActiveUid) &&
@@ -1268,7 +1281,18 @@ extern "C" int WrappedStat(const char* path, struct stat* st) {
 
     auto fn = reinterpret_cast<int (*)(const char*, struct stat*)>(gOriginalStat);
     if (fn) {
-        return fn(targetPath, st);
+        int ret = fn(targetPath, st);
+        if (ret == 0 && path != nullptr && actualPath != path) {
+            struct stat origSt;
+            // 对于重定向请求，把源路径的 inode 塞进目标属性中，以隔离 FUSE 缓存避免信息不同步污染
+            if (fn(path, &origSt) == 0) {
+                st->st_ino = origSt.st_ino;
+                st->st_dev = origSt.st_dev;
+            } else {
+                st->st_ino = std::hash<std::string>{}(path);
+            }
+        }
+        return ret;
     }
     errno = ENOSYS;
     return -1;
